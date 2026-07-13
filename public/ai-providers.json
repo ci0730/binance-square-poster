@@ -1,0 +1,237 @@
+{
+  "providers": [
+    {
+      "id": "zhipu",
+      "label": "智谱 AI",
+      "models": [
+        {
+          "id": "glm-4-flash",
+          "label": "glm-4-flash（推荐，速度快）"
+        },
+        {
+          "id": "glm-4-air",
+          "label": "glm-4-air"
+        },
+        {
+          "id": "glm-4-plus",
+          "label": "glm-4-plus"
+        },
+        {
+          "id": "glm-4",
+          "label": "glm-4"
+        }
+      ],
+      "keyHint": "智谱 AI API Key",
+      "keyUrl": "https://open.bigmodel.cn/usercenter/apikeys",
+      "defaultModel": "glm-4-flash",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "label": "deepseek-chat（推荐）"
+        },
+        {
+          "id": "deepseek-reasoner",
+          "label": "deepseek-reasoner（推理）"
+        }
+      ],
+      "keyHint": "DeepSeek API Key",
+      "keyUrl": "https://platform.deepseek.com/api_keys",
+      "defaultModel": "deepseek-chat",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "models": [
+        {
+          "id": "gpt-4o-mini",
+          "label": "gpt-4o-mini（推荐，性价比高）"
+        },
+        {
+          "id": "gpt-4o",
+          "label": "gpt-4o"
+        },
+        {
+          "id": "gpt-4.1-mini",
+          "label": "gpt-4.1-mini"
+        },
+        {
+          "id": "gpt-4.1",
+          "label": "gpt-4.1"
+        },
+        {
+          "id": "o3-mini",
+          "label": "o3-mini（推理）"
+        }
+      ],
+      "keyHint": "OpenAI API Key",
+      "keyUrl": "https://platform.openai.com/api-keys",
+      "defaultModel": "gpt-4o-mini",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "qwen",
+      "label": "通义千问",
+      "models": [
+        {
+          "id": "qwen-turbo",
+          "label": "qwen-turbo（速度快）"
+        },
+        {
+          "id": "qwen-plus",
+          "label": "qwen-plus（推荐）"
+        },
+        {
+          "id": "qwen-max",
+          "label": "qwen-max"
+        },
+        {
+          "id": "qwen-long",
+          "label": "qwen-long（长文本）"
+        }
+      ],
+      "keyHint": "通义千问 API Key",
+      "keyUrl": "https://bailian.console.aliyun.com/",
+      "defaultModel": "qwen-plus",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "moonshot",
+      "label": "Moonshot / Kimi",
+      "models": [
+        {
+          "id": "moonshot-v1-8k",
+          "label": "moonshot-v1-8k"
+        },
+        {
+          "id": "moonshot-v1-32k",
+          "label": "moonshot-v1-32k"
+        },
+        {
+          "id": "moonshot-v1-128k",
+          "label": "moonshot-v1-128k"
+        }
+      ],
+      "keyHint": "Moonshot API Key",
+      "keyUrl": "https://platform.moonshot.cn/console/api-keys",
+      "defaultModel": "moonshot-v1-8k",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "doubao",
+      "label": "豆包（火山方舟）",
+      "models": [
+        {
+          "id": "doubao-1-5-pro-32k-250115",
+          "label": "Doubao 1.5 Pro 32K"
+        },
+        {
+          "id": "doubao-1-5-lite-32k-250115",
+          "label": "Doubao 1.5 Lite 32K"
+        },
+        {
+          "id": "deepseek-v3-250324",
+          "label": "DeepSeek V3（方舟接入）"
+        }
+      ],
+      "keyHint": "火山方舟 API Key",
+      "keyUrl": "https://console.volcengine.com/ark",
+      "defaultModel": "doubao-1-5-pro-32k-250115",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "siliconflow",
+      "label": "SiliconFlow",
+      "models": [
+        {
+          "id": "deepseek-ai/DeepSeek-V3",
+          "label": "DeepSeek V3"
+        },
+        {
+          "id": "Qwen/Qwen2.5-72B-Instruct",
+          "label": "Qwen 2.5 72B"
+        },
+        {
+          "id": "THUDM/glm-4-9b-chat",
+          "label": "GLM-4 9B"
+        },
+        {
+          "id": "Pro/Qwen/Qwen2.5-7B-Instruct",
+          "label": "Qwen 2.5 7B"
+        }
+      ],
+      "keyHint": "SiliconFlow API Key",
+      "keyUrl": "https://cloud.siliconflow.cn/account/ak",
+      "defaultModel": "deepseek-ai/DeepSeek-V3",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic Claude",
+      "models": [
+        {
+          "id": "claude-sonnet-4-20250514",
+          "label": "Claude Sonnet 4（推荐）"
+        },
+        {
+          "id": "claude-3-5-haiku-20241022",
+          "label": "Claude 3.5 Haiku（快速）"
+        },
+        {
+          "id": "claude-3-5-sonnet-20241022",
+          "label": "Claude 3.5 Sonnet"
+        }
+      ],
+      "keyHint": "Anthropic API Key",
+      "keyUrl": "https://console.anthropic.com/settings/keys",
+      "defaultModel": "claude-sonnet-4-20250514",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "gemini",
+      "label": "Google Gemini",
+      "models": [
+        {
+          "id": "gemini-2.0-flash",
+          "label": "Gemini 2.0 Flash（推荐）"
+        },
+        {
+          "id": "gemini-2.5-flash-preview-05-20",
+          "label": "Gemini 2.5 Flash Preview"
+        },
+        {
+          "id": "gemini-1.5-pro",
+          "label": "Gemini 1.5 Pro"
+        }
+      ],
+      "keyHint": "Google AI Studio API Key",
+      "keyUrl": "https://aistudio.google.com/apikey",
+      "defaultModel": "gemini-2.0-flash",
+      "allowCustomBaseUrl": false,
+      "allowCustomModel": false
+    },
+    {
+      "id": "custom",
+      "label": "自定义（OpenAI 兼容）",
+      "models": [],
+      "keyHint": "API Key",
+      "keyUrl": "",
+      "defaultModel": "",
+      "allowCustomBaseUrl": true,
+      "allowCustomModel": true
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "name": "binance-square-poster",
+  "version": "1.0.0",
+  "description": "Web UI for batch publishing posts to Binance Square",
+  "author": "Binance Square Poster",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "node server.js",
+    "desktop": "node scripts/run-desktop.cjs .",
+    "desktop:bat": "scripts\\start-desktop.bat",
+    "build:win": "node scripts/build-win.cjs",
+    "install:browser": "playwright install chromium"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1",
+    "socks": "^2.8.9"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.binance-square.poster",
+    "productName": "币安广场批量发帖",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "lib/**/*",
+      "public/**/*",
+      "server.js",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "package.json",
+      "server.js",
+      "lib/**",
+      "public/**",
+      "node_modules/playwright/**",
+      "node_modules/playwright-core/**",
+      "node_modules/socks/**"
+    ],
+    "extraFiles": [
+      {
+        "from": "build/data-readme.txt",
+        "to": "data/说明.txt"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "币安广场批量发帖",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052",
+      "include": "build/installer.nsh"
+    }
+  }
+}

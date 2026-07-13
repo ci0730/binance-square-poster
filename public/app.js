@@ -1,0 +1,4293 @@
+/** @type {Array<DraftPost>} */
+let posts = [];
+let apiConfigured = false;
+let publishing = false;
+let currentImages = [];
+let currentFilter = "draft";
+let activeView = "home";
+let autoRefreshTimer = null;
+let alerts = [];
+/** @type {{defaultAccountId:string|null, accounts:Array<{id:string,name:string,maskedKey:string,hasApiKey:boolean,hasCookie:boolean,isDefault:boolean,username?:string,createdAt?:number,proxyLabel?:string}>}} */
+let accountStore = { defaultAccountId: null, accounts: [] };
+const ACCOUNT_PAGE_SIZE = 10;
+/** @type {{query:string, dateFrom:string, dateTo:string, page:number}} */
+let accountListState = { query: "", dateFrom: "", dateTo: "", page: 1 };
+let publishedPostsCache = { accountId: null, posts: [] };
+let selectedHistoryAccountId = null;
+
+const NO_HISTORY_DETECTED_MSG = "未检测到该账户历史帖子，请发布一条帖子后再来获取";
+const HISTORY_FETCH_CONFIRM_MSG =
+  "拉取广场历史帖子需要先成功发布至少 1 条帖子，系统才能识别账号并获取历史记录；否则无法拉取。\n\n若尚未发帖，请先发布一条后再来拉取。\n也可在「账号管理」中配置 Cookie 或填写广场用户名，无需发帖即可拉取。\n\n确定继续拉取吗？";
+
+const PROXY_SYSTEM_NOTIFIED_KEY = "binance-square-proxy-system-notified";
+const THEME_STORAGE_KEY = "binance-square-theme";
+const STORAGE_KEY = "binance-square-poster-drafts";
+
+const APP_MODAL_IDS = [
+  "postModal",
+  "importModal",
+  "accountModal",
+  "publishedPostsModal",
+  "proxySetupModal",
+  "legalModal",
+  "aiProfileModal",
+];
+
+function getAppModal(id) {
+  return typeof id === "string" ? document.getElementById(id) : id;
+}
+
+function closeAppModals(exceptId = null) {
+  for (const id of APP_MODAL_IDS) {
+    if (exceptId && id === exceptId) continue;
+    getAppModal(id)?.close();
+  }
+}
+
+function openAppModal(id) {
+  const el = getAppModal(id);
+  if (!el) return null;
+  closeAppModals();
+  if (!el.open) el.showModal();
+  return el;
+}
+
+function bindAppModalDismiss() {
+  for (const id of APP_MODAL_IDS) {
+    const el = getAppModal(id);
+    if (!el || el.dataset.dismissBound) continue;
+    el.dataset.dismissBound = "1";
+    el.addEventListener("click", (e) => {
+      if (e.target === el) el.close();
+    });
+  }
+}
+
+const DEFAULT_AVAILABLE_TOKENS = [
+  "BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "AVAX", "LINK",
+  "DOT", "NEAR", "APT", "TON", "TRX", "SHIB", "MATIC", "LTC", "UNI", "FIL", "BCH",
+];
+
+const DEFAULT_SENTIMENT_OPTIONS = [
+  { id: "auto", label: "自动（跟随行情）" },
+  { id: "bullish", label: "看多" },
+  { id: "bearish", label: "看空" },
+];
+
+const DEFAULT_CONTENT_STYLE_OPTIONS = [
+  { id: "casual", label: "口语化分享", hint: "真人口吻、自然聊天感，适合日常互动" },
+  { id: "market", label: "行情短评", hint: "数据简洁、带关键价位，适合冲高流量" },
+  { id: "news", label: "热点快讯", hint: "快讯体、核心看点，蹭官方与热点流量" },
+  { id: "tutorial", label: "教学干货", hint: "分步骤教学，高留存、高转化" },
+];
+
+const LEGAL_CONTENT = {
+  disclaimer: {
+    title: "免责声明",
+    html: `
+      <p>本软件「币安广场批量发帖工具」仅供学习、研究与合法内容发布使用。使用本软件即表示您已阅读并同意以下条款。</p>
+      <h3>1. 非官方产品</h3>
+      <p>本软件为第三方工具，与币安（Binance）官方无隶属、合作或授权关系。币安、Binance Square 及相关标识归其权利人所有。</p>
+      <h3>2. 使用风险自负</h3>
+      <p>您应自行确保发布内容符合币安广场社区规范及当地法律法规。因账号封禁、内容下架、API 限流、网络故障、代理失效、第三方服务中断等导致的损失，由使用者自行承担。</p>
+      <h3>3. 内容与投资建议</h3>
+      <p>软件内 AI 生成内容仅供参考，不构成任何投资建议、财务建议或交易建议。加密货币投资具有高风险，请独立判断并自行研究（DYOR）。</p>
+      <h3>4. 数据与隐私</h3>
+      <p>API Key、Cookie、配置与缓存数据默认保存在本机。请妥善保管密钥，勿向他人泄露。开发者不对因密钥泄露造成的损失负责。</p>
+      <h3>5. 软件按现状提供</h3>
+      <p>本软件按「现状」提供，不提供任何明示或暗示的保证。开发者不对使用本软件产生的直接或间接损害承担责任。</p>
+    `,
+  },
+  license: {
+    title: "许可协议",
+    html: `
+      <p>感谢您使用「币安广场批量发帖工具」。在使用、复制或分发本软件前，请仔细阅读本许可协议。</p>
+      <h3>1. 授权范围</h3>
+      <p>在您遵守本协议的前提下，授予您在本机安装、运行本软件的非独占、不可转让、免费使用许可，仅供个人或内部业务场景下的合法内容发布与管理。</p>
+      <h3>2. 使用限制</h3>
+      <ul>
+        <li>不得将本软件用于 spam、虚假宣传、操纵市场、违法违规内容发布或其他滥用行为；</li>
+        <li>不得对本软件进行逆向工程、破解授权、移除版权声明或恶意传播修改版；</li>
+        <li>不得将本软件用于侵犯他人知识产权、隐私权或其他合法权益的行为；</li>
+        <li>应遵守币安平台规则、智谱 AI 等第三方服务条款及适用法律法规。</li>
+      </ul>
+      <h3>3. 知识产权</h3>
+      <p>本软件界面、代码与文档的知识产权归开发者所有。第三方组件（如 Electron、Playwright 等）遵循其各自开源许可。</p>
+      <h3>4. 设备绑定</h3>
+      <p>本软件可在本机记录设备标识用于授权管理。您可通过「解绑设备」解除当前设备绑定，以便在其他电脑重新使用。</p>
+      <h3>5. 协议变更与终止</h3>
+      <p>开发者保留更新本协议的权利。若您不同意更新后的条款，应停止使用本软件。违反本协议时，开发者有权终止您的使用许可。</p>
+    `,
+  },
+};
+const MONITOR_SETTINGS_KEY = "binance-square-poster-monitor";
+const ALERTS_KEY = "binance-square-poster-alerts";
+const MAX_ALERTS = 50;
+
+/** @typedef {{id:string,text:string,title:string,imagePaths:string[],selected:boolean,publishState:'draft'|'published'|'failed'|'publishing',result?:object,error?:string,publishedAt?:number,createdAt:number,accountId?:string|null,accountName?:string,stats?:object,statsLoading?:boolean,statsError?:string,commentsExpanded?:boolean,commentsLoading?:boolean,commentsError?:string,commentsList?:object[],commentsHint?:string}} DraftPost */
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+function getTheme() {
+  return localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+}
+
+const THEME_TOGGLE_ICONS = {
+  dark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>`,
+  light: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 14.5A7.5 7.5 0 0 1 9.5 3 6.5 6.5 0 1 0 21 14.5Z"/></svg>`,
+};
+
+function applyTheme(theme = getTheme()) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const icon = $("#themeToggleIcon");
+  const label = $("#themeToggleLabel");
+  if (icon) icon.innerHTML = theme === "dark" ? THEME_TOGGLE_ICONS.dark : THEME_TOGGLE_ICONS.light;
+  if (label) label.textContent = theme === "dark" ? "白天模式" : "黑夜模式";
+}
+
+function toggleTheme() {
+  const next = getTheme() === "dark" ? "light" : "dark";
+  localStorage.setItem(THEME_STORAGE_KEY, next);
+  applyTheme(next);
+}
+
+function showLegalModal(type) {
+  const content = LEGAL_CONTENT[type];
+  if (!content) return;
+  const modal = $("#legalModal");
+  const title = $("#legalModalTitle");
+  const body = $("#legalModalBody");
+  if (!modal || !title || !body) return;
+  title.textContent = content.title;
+  body.innerHTML = content.html;
+  openAppModal("legalModal");
+}
+
+async function unbindCurrentDevice() {
+  let device = {};
+  try {
+    const res = await fetch("/api/device");
+    device = await res.json();
+  } catch {
+    alert("无法连接本地服务，请确认软件已启动。");
+    return;
+  }
+
+  const confirmed = confirm(
+    `确认解绑本设备吗？\n\n当前设备 ID：${device.maskedDeviceId || "未知"}\n机器标识：${device.maskedMachineId || "未知"}\n\n解绑后可在其他电脑安装使用。本机配置与缓存数据不会自动删除。`,
+  );
+  if (!confirmed) return;
+
+  try {
+    const res = await fetch("/api/device/unbind", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "解绑失败");
+    alert(data.message || "设备已解绑");
+  } catch (err) {
+    alert(err.message || "解绑失败，请稍后重试");
+  }
+}
+
+function generateId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeStoredPost(p) {
+  const publishState =
+    p.publishState ||
+    (p.status === "success" ? "published" : p.status === "error" ? "failed" : p.status === "publishing" ? "publishing" : "draft");
+
+  return {
+    id: p.id || generateId(),
+    text: p.text || "",
+    title: p.title || "",
+    imagePaths: Array.isArray(p.imagePaths) ? p.imagePaths : [],
+    selected: publishState === "published" ? Boolean(p.selected) : p.selected !== false,
+    publishState,
+    result: p.result || null,
+    error: p.error || null,
+    publishedAt: p.publishedAt || null,
+    createdAt: p.createdAt || Date.now(),
+    accountId: p.accountId || null,
+    accountName: p.accountName || null,
+    stats: p.stats || null,
+    commentsExpanded: Boolean(p.commentsExpanded),
+    commentsList: Array.isArray(p.commentsList) ? p.commentsList : null,
+    commentsHint: p.commentsHint || null,
+  };
+}
+
+function loadDrafts() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data.map(normalizeStoredPost) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDrafts() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(posts));
+}
+
+function defaultMonitorSettings() {
+  return {
+    autoRefreshEnabled: false,
+    autoRefreshMinutes: 5,
+    viewAlertThreshold: 10,
+    notifyBrowser: true,
+  };
+}
+
+function loadMonitorSettings() {
+  try {
+    const raw = localStorage.getItem(MONITOR_SETTINGS_KEY);
+    return raw ? { ...defaultMonitorSettings(), ...JSON.parse(raw) } : defaultMonitorSettings();
+  } catch {
+    return defaultMonitorSettings();
+  }
+}
+
+function saveMonitorSettings(settings) {
+  localStorage.setItem(MONITOR_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function loadAlerts() {
+  try {
+    const raw = localStorage.getItem(ALERTS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAlerts() {
+  localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts.slice(0, MAX_ALERTS)));
+}
+
+function applyMonitorSettingsToUI(settings) {
+  $("#autoRefreshEnabled").checked = settings.autoRefreshEnabled;
+  $("#autoRefreshMinutes").value = settings.autoRefreshMinutes;
+  $("#viewAlertThreshold").value = settings.viewAlertThreshold;
+  $("#notifyBrowser").checked = settings.notifyBrowser;
+  updateAutoRefreshStatus();
+}
+
+function readMonitorSettingsFromUI() {
+  return {
+    autoRefreshEnabled: $("#autoRefreshEnabled").checked,
+    autoRefreshMinutes: Math.max(1, parseInt($("#autoRefreshMinutes").value, 10) || 5),
+    viewAlertThreshold: Math.max(1, parseInt($("#viewAlertThreshold").value, 10) || 10),
+    notifyBrowser: $("#notifyBrowser").checked,
+  };
+}
+
+function updateAutoRefreshStatus() {
+  const settings = loadMonitorSettings();
+  const el = $("#autoRefreshStatus");
+  if (settings.autoRefreshEnabled) {
+    el.textContent = `定时刷新已开启，每 ${settings.autoRefreshMinutes} 分钟`;
+    el.className = "monitor-status active";
+  } else {
+    el.textContent = "定时刷新未开启";
+    el.className = "monitor-status";
+  }
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  const settings = loadMonitorSettings();
+  if (!settings.autoRefreshEnabled) return;
+  const ms = settings.autoRefreshMinutes * 60 * 1000;
+  autoRefreshTimer = setInterval(() => {
+    if (!publishing) refreshAllStats({ silent: true });
+  }, ms);
+}
+
+function setupAutoRefresh() {
+  const settings = readMonitorSettingsFromUI();
+  saveMonitorSettings(settings);
+  updateAutoRefreshStatus();
+  if (settings.autoRefreshEnabled) {
+    if (settings.notifyBrowser && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+    startAutoRefresh();
+  } else {
+    stopAutoRefresh();
+  }
+}
+
+function sortPostsNewestFirst(list) {
+  return [...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+function getDraftPosts() {
+  let filtered;
+  if (currentFilter === "draft") {
+    filtered = posts.filter((p) => p.publishState === "draft" || p.publishState === "publishing");
+  } else if (currentFilter === "failed") {
+    filtered = posts.filter((p) => p.publishState === "failed");
+  } else {
+    filtered = posts.filter((p) => p.publishState !== "published");
+  }
+  return sortPostsNewestFirst(filtered);
+}
+
+function getPublishedPosts() {
+  return posts.filter((p) => p.publishState === "published");
+}
+
+function getFilteredPosts() {
+  return getDraftPosts();
+}
+
+function switchView(view) {
+  activeView = view;
+  $$(".view-panel").forEach((panel) => panel.classList.add("hidden"));
+  const target = $(`#view-${view}`);
+  if (target) target.classList.remove("hidden");
+  $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
+  if (view === "api") {
+    updateApiStatusCard();
+    refreshApiAiManagePanel();
+  }
+  if (view === "ai") loadAiConfig();
+  if (view === "home") renderHomeDashboard();
+  if (view === "logs") $("#progressPanel")?.classList.remove("hidden");
+  renderPosts();
+  renderAlerts();
+}
+
+function renderHomeDashboard() {
+  const card = $("#homeAccountCard");
+  if (!card) return;
+
+  const defaultId = getDefaultAccountId();
+  const acc = accountStore.accounts.find((a) => a.id === defaultId) || accountStore.accounts[0];
+
+  if (!acc) {
+    card.innerHTML = `
+      <div class="empty-state">
+        <p>尚未配置账号，请先添加币安广场 OpenAPI 账号</p>
+        <button type="button" class="btn btn-primary btn-sm" id="btnHomeAddAccount">+ 添加账号</button>
+      </div>`;
+    $("#btnHomeAddAccount")?.addEventListener("click", () => {
+      switchView("accounts");
+      openAccountModal(null);
+    });
+  } else {
+    card.innerHTML = `
+      <div class="home-account-row"><span>账号名称</span><strong>${escapeHtml(acc.name)}${acc.isDefault ? "（默认）" : ""}</strong></div>
+      <div class="home-account-row"><span>API Key</span><strong>${acc.hasApiKey ? escapeHtml(acc.maskedKey) : '<span class="error-text">未配置</span>'}</strong></div>
+      <div class="home-account-row"><span>Cookie</span><strong>${acc.hasCookie ? "已配置" : "未配置"}</strong></div>
+      <div class="home-account-row"><span>广场用户名</span><strong>${acc.username ? escapeHtml(acc.username) : "—"}</strong></div>
+      <div class="home-account-row"><span>连接状态</span><strong style="color:${apiConfigured ? "var(--success)" : "var(--accent)"}">${apiConfigured ? "已连接" : "待验证"}</strong></div>
+      <div class="form-row" style="margin-top:8px">
+        <button type="button" class="btn btn-secondary btn-sm" id="btnHomeAddPost">+ 发帖</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btnHomeEditAccount">编辑账号</button>
+      </div>`;
+    $("#btnHomeAddPost")?.addEventListener("click", () => {
+      switchView("drafts");
+      openPostModal(null);
+    });
+    $("#btnHomeEditAccount")?.addEventListener("click", () => {
+      switchView("accounts");
+      openAccountModal(acc.id);
+    });
+  }
+
+  const draftCount = countByState("draft") + countByState("publishing");
+  const publishedCount = countByState("published");
+  const failedCount = countByState("failed");
+  $("#homeDraftCount").textContent = String(draftCount);
+  $("#homePublishedCount").textContent = String(publishedCount);
+  $("#homeFailedCount").textContent = String(failedCount);
+  $("#homeAccountCount").textContent = String(accountStore.accounts.length);
+  const hint = $("#homePublishedListHint");
+  if (hint) hint.textContent = publishedCount ? `共 ${publishedCount} 条` : "";
+}
+
+function appendSystemLog(msg, type = "info") {
+  const box = $("#systemLog");
+  if (!box) return;
+  const el = document.createElement("div");
+  el.className = `log-line ${type}`;
+  const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  el.textContent = `[${stamp}] ${msg}`;
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+function showAppToast(message, type = "ok") {
+  let root = document.getElementById("appToastRoot");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "appToastRoot";
+    root.className = "app-toast-root";
+    document.body.appendChild(root);
+  }
+  const el = document.createElement("div");
+  el.className = `app-toast app-toast-${type}`;
+  el.textContent = message;
+  root.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("visible"));
+  setTimeout(() => {
+    el.classList.remove("visible");
+    setTimeout(() => el.remove(), 320);
+  }, 3200);
+}
+
+function showPublishedImportStatus(message, type = "ok") {
+  const el = $("#publishedImportStatus");
+  if (!el) return;
+  el.textContent = message;
+  el.className = `message ${type}`;
+  el.classList.remove("hidden");
+}
+
+let globalProxyConfig = { type: "http", host: "", port: "", username: "", password: "" };
+
+function updateApiStatusCard(config = null) {
+  const statusEl = $("#apiStatusText");
+  if (!statusEl) return;
+  const count = accountStore.accounts.length;
+  $("#apiAccountCount").textContent = String(count);
+  $("#apiProxyText").textContent = config?.proxyConfig?.proxyLabel || globalProxyConfig.proxyLabel || "未配置";
+  const defaultAcc = accountStore.accounts.find((a) => a.isDefault) || accountStore.accounts[0];
+  $("#apiMaskedKey").textContent = defaultAcc?.maskedKey || "未配置";
+  if (apiConfigured) {
+    statusEl.textContent = "已连接";
+    statusEl.style.color = "var(--success)";
+  } else if (count > 0) {
+    statusEl.textContent = "账号已添加，Key 未验证";
+    statusEl.style.color = "var(--accent)";
+  } else {
+    statusEl.textContent = "未配置";
+    statusEl.style.color = "var(--text-muted)";
+  }
+}
+
+async function testDefaultApi() {
+  const el = $("#apiManageMessage");
+  if (el) {
+    el.textContent = "正在验证...";
+    el.className = "message info";
+  }
+  try {
+    const res = await fetch("/api/config/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: getDefaultAccountId() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "验证失败");
+    if (el) {
+      el.textContent = data.message || "API 验证成功";
+      el.className = "message ok";
+    }
+    appendSystemLog("默认账号 API 验证成功", "ok");
+  } catch (err) {
+    if (el) {
+      el.textContent = err.message;
+      el.className = "message err";
+    }
+    appendSystemLog(`API 验证失败: ${err.message}`, "err");
+  }
+}
+
+function getSelectedPosts() {
+  return posts.filter((p) => p.selected && p.publishState !== "publishing");
+}
+
+function countByState(state) {
+  return posts.filter((p) => p.publishState === state).length;
+}
+
+function getAccountName(accountId) {
+  if (!accountId) {
+    const defaultAcc = accountStore.accounts.find((a) => a.isDefault);
+    return defaultAcc?.name || "默认账号";
+  }
+  return accountStore.accounts.find((a) => a.id === accountId)?.name || "未知账号";
+}
+
+function getDefaultAccountId() {
+  return accountStore.defaultAccountId || accountStore.accounts.find((a) => a.isDefault)?.id || null;
+}
+
+function getPostAccountId(post) {
+  return post.accountId || getDefaultAccountId();
+}
+
+function getPostAccountName(post) {
+  return post.accountName || getAccountName(getPostAccountId(post));
+}
+
+function buildPostAccountSelectOptionsHtml(selectedId) {
+  const value = selectedId || getDefaultAccountId() || "";
+  return accountStore.accounts
+    .map(
+      (a) =>
+        `<option value="${a.id}" ${a.id === value ? "selected" : ""}>${escapeHtml(a.name)}${a.isDefault ? "（默认）" : ""}</option>`
+    )
+    .join("");
+}
+
+function setPostAccount(postId, accountId) {
+  const post = posts.find((p) => p.id === postId);
+  if (!post || !accountId || accountId === getPostAccountId(post)) return;
+  post.accountId = accountId;
+  post.accountName = getAccountName(accountId);
+  saveDrafts();
+  renderPosts();
+}
+
+function applyBulkAccountToSelected() {
+  const accountId = $("#bulkAccountSelect")?.value;
+  if (!accountId) return alert("请选择发布账号");
+  const selected = getSelectedPosts().filter((p) => p.publishState === "draft" || p.publishState === "failed");
+  if (!selected.length) return alert("请先勾选要设置账号的草稿或失败帖子");
+  const accountName = getAccountName(accountId);
+  selected.forEach((post) => {
+    post.accountId = accountId;
+    post.accountName = accountName;
+  });
+  saveDrafts();
+  renderPosts();
+  showAppToast(`已将 ${selected.length} 条帖子设为「${accountName}」`, "ok");
+}
+
+function updateDraftBulkAccountBar() {
+  const bar = $("#draftBulkAccountBar");
+  if (!bar) return;
+  const show = accountStore.accounts.length > 1;
+  bar.classList.toggle("hidden", !show);
+  if (show) renderAccountSelectOptions($("#bulkAccountSelect"), getDefaultAccountId());
+}
+
+function buildPostAccountBlock(p, { editable = false } = {}) {
+  const accountId = getPostAccountId(p);
+  const accountName = getPostAccountName(p);
+  const canEditAccount =
+    editable &&
+    accountStore.accounts.length > 0 &&
+    (p.publishState === "draft" || p.publishState === "failed");
+
+  if (canEditAccount) {
+    return `
+      <div class="post-account-row">
+        <label class="post-account-label" for="post-account-${p.id}">发布账号</label>
+        <select id="post-account-${p.id}" class="account-select post-account-select" data-id="${p.id}" title="选择发布此帖的账号">
+          ${buildPostAccountSelectOptionsHtml(accountId)}
+        </select>
+      </div>`;
+  }
+
+  if (!accountStore.accounts.length) {
+    return `
+      <div class="post-account-row post-account-row--static">
+        <span class="post-account-label">发布账号</span>
+        <span class="post-account-badge post-account-badge--warn">请先添加账号</span>
+      </div>`;
+  }
+
+  return `
+    <div class="post-account-row post-account-row--static">
+      <span class="post-account-label">发布账号</span>
+      <span class="post-account-badge">${escapeHtml(accountName)}</span>
+    </div>`;
+}
+
+function renderAccountSelectOptions(selectEl, selectedId) {
+  if (!selectEl) return;
+  if (!accountStore.accounts.length) {
+    selectEl.innerHTML = `<option value="">请先添加账号</option>`;
+    return;
+  }
+  const defaultId = getDefaultAccountId();
+  const value = selectedId || defaultId || "";
+  selectEl.innerHTML = accountStore.accounts
+    .map(
+      (a) =>
+        `<option value="${a.id}" ${a.id === value ? "selected" : ""}>${escapeHtml(a.name)}${a.isDefault ? "（默认）" : ""}</option>`
+    )
+    .join("");
+}
+
+function renderAccountSelects() {
+  renderAccountSelectOptions($("#defaultAccountSelect"), getDefaultAccountId());
+  renderAccountSelectOptions($("#postAccountSelect"), getDefaultAccountId());
+  if ($("#aiAccountSelect")) {
+    renderAccountSelectOptions($("#aiAccountSelect"), getDefaultAccountId());
+  }
+  if ($("#historyAccountSelect")) {
+    const historyValue =
+      selectedHistoryAccountId || $("#historyAccountSelect").value || getDefaultAccountId();
+    renderAccountSelectOptions($("#historyAccountSelect"), historyValue);
+    selectedHistoryAccountId = historyValue;
+    $("#historyAccountSelect").classList.toggle("hidden", accountStore.accounts.length <= 1);
+  }
+  if ($("#publishedPostsAccountSelect")?.closest("dialog")?.open) {
+    const current = $("#publishedPostsAccountSelect").value || publishedPostsCache.accountId || getDefaultAccountId();
+    renderAccountSelectOptions($("#publishedPostsAccountSelect"), current);
+  }
+}
+
+const PROXY_UI = {
+  account: {
+    prefix: "account",
+    defaultType: "global",
+    onMessage: (msg, type) => showAccountFormMessage(msg, type),
+    typeLabels: {
+      http: "HTTP",
+      https: "HTTPS",
+      socks5: "Socks5",
+      ssh: "SSH",
+    },
+  },
+  global: {
+    prefix: "global",
+    defaultType: "http",
+    onMessage: (msg, type) => showProxyMessage(msg, type),
+  },
+};
+
+function proxyEl(prefix, name) {
+  return $(`#${prefix}Proxy${name}`);
+}
+
+function updateProxyDetailsVisibility(scope = "account") {
+  const meta = PROXY_UI[scope];
+  const type = proxyEl(meta.prefix, "TypeSelect")?.value || meta.defaultType;
+  const details = proxyEl(meta.prefix, "Details");
+  const hint = proxyEl(meta.prefix, "Hint");
+  if (!details) return;
+  const showDetails = ["http", "https", "socks5", "ssh"].includes(type);
+  details.classList.toggle("hidden", !showDetails);
+  if (!hint) return;
+  if (scope === "global") {
+    if (type === "direct") {
+      hint.textContent = "直连模式下，所有使用全局代理的账号将直接走本地网络。";
+    } else if (type === "ssh") {
+      hint.textContent = "SSH 代理通过 Socks5 协议连接。账号管理中选择「使用全局代理」的账号均走此处配置。";
+    } else {
+      hint.textContent = "账号管理中选择「使用全局代理」的账号，发帖与拉取历史均走此处配置。";
+    }
+    return;
+  }
+  if (type === "direct") {
+    hint.textContent = "直连模式将使用本地网络发帖、拉取，不经过任何代理。";
+  } else if (type === "global") {
+    hint.textContent = "将使用「设置」页中的全局代理。如需独立 IP，请选择「自定义 Socks5/HTTP 代理 IP」。";
+  } else if (type === "ssh") {
+    hint.textContent = "SSH 隧道通过 Socks5 连接。填写隧道主机、端口与账号密码后，本账号固定走该代理。";
+  } else {
+    hint.textContent = "填写代理 IP 与端口后保存，本账号发帖、拉取历史、验证 Key 均走此代理。";
+  }
+  if (scope === "account") updateAccountProxyModeTip(type);
+}
+
+function updateAccountProxyModeTip(type) {
+  const el = $("#accountProxyModeTip");
+  if (!el) return;
+  if (type === "global") {
+    el.textContent = "当前：使用全局代理（来自「设置」页）";
+    el.classList.remove("is-custom");
+  } else if (type === "direct") {
+    el.textContent = "当前：直连模式（不走代理）";
+    el.classList.remove("is-custom");
+  } else {
+    const label = PROXY_UI.account.typeLabels?.[type] || type.toUpperCase();
+    el.textContent = `当前：独立代理 IP（${label}）`;
+    el.classList.add("is-custom");
+  }
+}
+
+function applyProxyToUI(scope, proxyConfig) {
+  const meta = PROXY_UI[scope];
+  const config = proxyConfig || { type: meta.defaultType, host: "", port: "", username: "", password: "" };
+  const useGlobalDefaults = scope === "global" && ["http", "https", "socks5", "ssh"].includes(config.type || meta.defaultType);
+  proxyEl(meta.prefix, "TypeSelect").value = config.type || meta.defaultType;
+  proxyEl(meta.prefix, "QuickInput").value = "";
+  proxyEl(meta.prefix, "HostInput").value = config.host || (useGlobalDefaults ? "127.0.0.1" : "");
+  proxyEl(meta.prefix, "PortInput").value = config.port || (useGlobalDefaults ? "7897" : "");
+  proxyEl(meta.prefix, "UserInput").value = config.username || "";
+  proxyEl(meta.prefix, "PassInput").value = "";
+  proxyEl(meta.prefix, "PassInput").placeholder = config.hasPassword ? "已保存，留空不修改" : "选填";
+  updateProxyDetailsVisibility(scope);
+}
+
+function collectProxyFromUI(scope) {
+  const meta = PROXY_UI[scope];
+  const type = proxyEl(meta.prefix, "TypeSelect")?.value || meta.defaultType;
+  const config = {
+    type,
+    host: proxyEl(meta.prefix, "HostInput")?.value.trim() || "",
+    port: proxyEl(meta.prefix, "PortInput")?.value.trim() || "",
+    username: proxyEl(meta.prefix, "UserInput")?.value.trim() || "",
+    password: proxyEl(meta.prefix, "PassInput")?.value || "",
+  };
+  if (type === "global" || type === "direct") {
+    config.host = "";
+    config.port = "";
+    config.username = "";
+    delete config.password;
+  } else if (!config.password) {
+    delete config.password;
+  }
+  return config;
+}
+
+function parseProxyQuickInput(scope) {
+  const meta = PROXY_UI[scope];
+  const raw = proxyEl(meta.prefix, "QuickInput")?.value.trim();
+  if (!raw) return;
+  const patterns = [
+    /^(https?|socks5|ssh):\/\/([^:/]+):(\d+)(?::([^:]*))?(?::(.*))?$/i,
+    /^(https?|socks5|ssh):\/\/(?:([^:@]+):([^@]*)@)?([^:/]+):(\d+)$/i,
+  ];
+  let parsed = null;
+  const colonMatch = raw.match(patterns[0]);
+  if (colonMatch) {
+    const [, type, host, port, username = "", password = ""] = colonMatch;
+    parsed = { type: type.toLowerCase(), host, port, username, password };
+  } else {
+    const authMatch = raw.match(patterns[1]);
+    if (authMatch) {
+      const [, type, username = "", password = "", host, port] = authMatch;
+      parsed = { type: type.toLowerCase(), host, port, username, password };
+    }
+  }
+  if (!parsed) {
+    meta.onMessage("无法识别代理格式，请使用 http://主机:端口:账号:密码", "err");
+    return;
+  }
+  proxyEl(meta.prefix, "TypeSelect").value = parsed.type === "ssh" ? "ssh" : parsed.type === "socks5" ? "socks5" : parsed.type === "https" ? "https" : "http";
+  proxyEl(meta.prefix, "HostInput").value = parsed.host;
+  proxyEl(meta.prefix, "PortInput").value = parsed.port;
+  proxyEl(meta.prefix, "UserInput").value = parsed.username || "";
+  if (parsed.password) proxyEl(meta.prefix, "PassInput").value = parsed.password;
+  updateProxyDetailsVisibility(scope);
+  meta.onMessage("已自动拆分代理配置", "ok");
+}
+
+function getAccountProxyConfig(accountId) {
+  const acc = accountStore.accounts.find((a) => a.id === accountId);
+  return acc?.proxyConfig || { type: "global", host: "", port: "", username: "", password: "" };
+}
+
+function applyAccountProxyToUI(proxyConfig) {
+  applyProxyToUI("account", proxyConfig);
+}
+
+function collectAccountProxyFromUI() {
+  return collectProxyFromUI("account");
+}
+
+function updateAccountProxyDetailsVisibility() {
+  updateProxyDetailsVisibility("account");
+}
+
+function parseAccountProxyQuickInput() {
+  parseProxyQuickInput("account");
+}
+
+function getAccountUsername(accountId) {
+  return accountStore.accounts.find((a) => a.id === accountId)?.username || "";
+}
+
+function formatAccountDate(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getFilteredAccounts() {
+  let list = [...accountStore.accounts].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const q = accountListState.query.trim().toLowerCase();
+  if (q) {
+    list = list.filter(
+      (acc) =>
+        acc.name.toLowerCase().includes(q) ||
+        (acc.username || "").toLowerCase().includes(q) ||
+        (acc.maskedKey || "").toLowerCase().includes(q)
+    );
+  }
+  if (accountListState.dateFrom) {
+    const from = new Date(accountListState.dateFrom);
+    from.setHours(0, 0, 0, 0);
+    list = list.filter((acc) => (acc.createdAt || 0) >= from.getTime());
+  }
+  if (accountListState.dateTo) {
+    const to = new Date(accountListState.dateTo);
+    to.setHours(23, 59, 59, 999);
+    list = list.filter((acc) => (acc.createdAt || 0) <= to.getTime());
+  }
+  return list;
+}
+
+function syncAccountFilterInputs() {
+  const searchInput = $("#accountSearchInput");
+  const dateFrom = $("#accountDateFrom");
+  const dateTo = $("#accountDateTo");
+  if (searchInput && searchInput.value !== accountListState.query) searchInput.value = accountListState.query;
+  if (dateFrom && dateFrom.value !== accountListState.dateFrom) dateFrom.value = accountListState.dateFrom;
+  if (dateTo && dateTo.value !== accountListState.dateTo) dateTo.value = accountListState.dateTo;
+}
+
+function resetAccountListFilters() {
+  accountListState = { query: "", dateFrom: "", dateTo: "", page: 1 };
+  syncAccountFilterInputs();
+  renderAccountList();
+}
+
+function renderAccountPagination(total, totalPages) {
+  const el = $("#accountPagination");
+  if (!el) return;
+
+  const hasFilters =
+    accountListState.query.trim() ||
+    accountListState.dateFrom ||
+    accountListState.dateTo;
+
+  if (total === 0 && !accountStore.accounts.length) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+
+  el.classList.remove("hidden");
+  const start = total === 0 ? 0 : (accountListState.page - 1) * ACCOUNT_PAGE_SIZE + 1;
+  const end = Math.min(accountListState.page * ACCOUNT_PAGE_SIZE, total);
+  const summary =
+    total === 0
+      ? hasFilters
+        ? "未找到匹配的账号"
+        : "暂无账号"
+      : `共 ${total} 个账号，显示 ${start}-${end}`;
+
+  el.innerHTML = `
+    <span class="account-pagination-summary">${summary}</span>
+    <div class="account-pagination-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="btnAccountPrevPage" ${accountListState.page <= 1 ? "disabled" : ""}>上一页</button>
+      <span class="account-pagination-page">第 ${totalPages ? accountListState.page : 0} / ${totalPages || 0} 页</span>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnAccountNextPage" ${accountListState.page >= totalPages ? "disabled" : ""}>下一页</button>
+    </div>
+  `;
+
+  $("#btnAccountPrevPage")?.addEventListener("click", () => {
+    if (accountListState.page > 1) {
+      accountListState.page -= 1;
+      renderAccountList();
+    }
+  });
+  $("#btnAccountNextPage")?.addEventListener("click", () => {
+    if (accountListState.page < totalPages) {
+      accountListState.page += 1;
+      renderAccountList();
+    }
+  });
+}
+
+function renderAccountList() {
+  const container = $("#accountList");
+  if (!container) return;
+
+  syncAccountFilterInputs();
+
+  if (!accountStore.accounts.length) {
+    $("#accountPagination")?.classList.add("hidden");
+    container.innerHTML = `<div class="account-empty">暂无账号，点击「添加账号」开始配置</div>`;
+    return;
+  }
+
+  const filtered = getFilteredAccounts();
+  const totalPages = Math.max(1, Math.ceil(filtered.length / ACCOUNT_PAGE_SIZE));
+  if (accountListState.page > totalPages) accountListState.page = totalPages;
+  if (accountListState.page < 1) accountListState.page = 1;
+
+  const pageAccounts = filtered.slice(
+    (accountListState.page - 1) * ACCOUNT_PAGE_SIZE,
+    accountListState.page * ACCOUNT_PAGE_SIZE
+  );
+
+  renderAccountPagination(filtered.length, totalPages);
+
+  if (!pageAccounts.length) {
+    container.innerHTML = `
+      <div class="account-empty">
+        未找到匹配的账号
+        <button type="button" class="btn btn-ghost btn-sm" id="btnAccountEmptyClear">清除筛选</button>
+      </div>`;
+    $("#btnAccountEmptyClear")?.addEventListener("click", resetAccountListFilters);
+    return;
+  }
+
+  container.innerHTML = pageAccounts
+    .map(
+      (acc) => `
+    <div class="account-card ${acc.isDefault ? "is-default" : ""}" data-id="${acc.id}">
+      <div class="account-card-main">
+        <div class="account-card-title">
+          <strong>${escapeHtml(acc.name)}</strong>
+          ${acc.isDefault ? '<span class="badge badge-green account-default-badge">默认</span>' : ""}
+        </div>
+        <div class="account-card-meta">
+          <span>${acc.hasApiKey ? `API Key: ${escapeHtml(acc.maskedKey)}` : '<span class="error-text">未配置 API Key</span>'}</span>
+          <span>${acc.hasCookie ? "已配置 Cookie" : "未配置 Cookie"}</span>
+          <span>${acc.proxyLabel ? `代理: ${escapeHtml(acc.proxyLabel)}` : "代理: 全局"}</span>
+          ${acc.username ? `<span>用户名: ${escapeHtml(acc.username)}</span>` : ""}
+          <span>添加时间: ${formatAccountDate(acc.createdAt)}</span>
+        </div>
+      </div>
+      <div class="account-card-actions">
+        <button class="btn btn-ghost btn-sm" data-action="view-posts" data-id="${acc.id}">已发布</button>
+        ${acc.isDefault ? "" : `<button class="btn btn-ghost btn-sm" data-action="set-default" data-id="${acc.id}">设为默认</button>`}
+        <button class="btn btn-ghost btn-sm" data-action="edit-account" data-id="${acc.id}">编辑</button>
+        <button class="btn btn-ghost btn-sm btn-danger" data-action="delete-account" data-id="${acc.id}" ${accountStore.accounts.length <= 1 ? "disabled" : ""}>删除</button>
+      </div>
+    </div>`
+    )
+    .join("");
+
+  container.querySelectorAll("[data-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.id;
+      if (btn.dataset.action === "edit-account") openAccountModal(id);
+      if (btn.dataset.action === "delete-account") deleteAccount(id);
+      if (btn.dataset.action === "set-default") setDefaultAccount(id);
+      if (btn.dataset.action === "view-posts") {
+        if (!canFetchAccountHistory(id)) {
+          showPublishedPostsEmptyState(id);
+        } else {
+          showPublishedPostsModal(id, { postRef: findLocalPostRefForAccount(id) });
+        }
+      }
+    });
+  });
+}
+
+async function loadAccounts() {
+  const res = await fetch("/api/accounts");
+  accountStore = await res.json();
+  renderAccountList();
+  renderAccountSelects();
+  if (activeView === "home") renderHomeDashboard();
+  if (activeView === "ai" || activeView === "api") {
+    try {
+      const aiRes = await fetch("/api/ai/config");
+      const aiData = normalizeAiConfigResponse(await aiRes.json());
+      if (activeView === "ai") await applyAiConfigToUI(aiData);
+      if (activeView === "api") {
+        aiProfilesCache = aiData.aiProfiles || [];
+        defaultAiProfileIdCache = aiData.defaultAiProfileId || null;
+        updateApiAiStatusCard(aiData);
+        renderAiProfilesList(aiProfilesCache, defaultAiProfileIdCache);
+      }
+    } catch {
+      // ignore ai refresh errors when syncing accounts
+    }
+  }
+}
+
+async function init() {
+  applyTheme();
+  posts = loadDrafts();
+  alerts = loadAlerts();
+  applyMonitorSettingsToUI(loadMonitorSettings());
+  await loadAccounts();
+  await syncAllLocalPublishedToCache();
+  await loadConfig();
+  await loadAiConfig();
+  initAiCollapseSections();
+  bindEvents();
+  switchView("home");
+  renderPosts();
+  renderAlerts();
+  if (loadMonitorSettings().autoRefreshEnabled) startAutoRefresh();
+  setInterval(refreshAiRuntimeStatus, 30000);
+}
+
+async function refreshAiRuntimeStatus() {
+  if (activeView !== "ai") return;
+  try {
+    const res = await fetch("/api/ai/config");
+    const data = await res.json();
+    renderAiStatus(data);
+  } catch {
+    // ignore background status refresh errors
+  }
+}
+
+async function loadConfig() {
+  const res = await fetch("/api/config");
+  const data = await res.json();
+  apiConfigured = data.configured;
+  const badge = $("#keyStatus");
+  const count = data.accountCount || accountStore.accounts.length;
+  if (data.configured) {
+    badge.textContent = count > 1 ? `${count} 个账号已配置` : `账号: ${getAccountName(data.defaultAccountId)}`;
+    badge.className = "badge badge-green";
+  } else if (count > 0) {
+    badge.textContent = `${count} 个账号（未配置 Key）`;
+    badge.className = "badge badge-gray";
+  } else {
+    badge.textContent = "未配置账号";
+    badge.className = "badge badge-gray";
+  }
+  if (data.proxyConfig) {
+    globalProxyConfig = data.proxyConfig;
+    applyProxyToUI("global", data.proxyConfig);
+    updateSystemProxyHint(data.proxyConfig);
+    maybeNotifySystemProxy(data.proxyConfig);
+  }
+  if (data.dataDir && $("#dataDirHint")) {
+    $("#dataDirHint").textContent = `数据与缓存目录：${data.dataDir}（账号、AI 配置、帖子缓存等均保存在此）`;
+  }
+  if ($("#browserPathInput")) {
+    $("#browserPathInput").value = data.browserPath || "";
+  }
+  updateApiStatusCard(data);
+  updatePublishBtn();
+  if (activeView === "home") renderHomeDashboard();
+  await maybeShowProxySetupGuide(data.proxyConfig);
+}
+
+function updateSystemProxyHint(proxyConfig) {
+  const el = $("#systemProxyHint");
+  if (!el) return;
+  if (proxyConfig?.proxySource === "system" && proxyConfig.systemProxy) {
+    el.textContent = `已自动使用 Windows 系统代理：${proxyConfig.systemProxy.host}:${proxyConfig.systemProxy.port}（梯子已开系统代理时无需手动填写，也可保存为固定配置）`;
+    el.classList.remove("hidden");
+    return;
+  }
+  if (proxyConfig?.proxySource === "none") {
+    el.textContent = "未检测到可用代理。请开启梯子并打开「系统代理」，或在下方手动填写主机和端口。";
+    el.classList.remove("hidden");
+    return;
+  }
+  el.classList.add("hidden");
+}
+
+function maybeNotifySystemProxy(proxyConfig) {
+  if (proxyConfig?.proxySource !== "system" || !proxyConfig.systemProxy) return;
+  if (localStorage.getItem(PROXY_SYSTEM_NOTIFIED_KEY)) return;
+  localStorage.setItem(PROXY_SYSTEM_NOTIFIED_KEY, "1");
+  appendSystemLog(
+    `已自动使用 Windows 系统代理（${proxyConfig.systemProxy.host}:${proxyConfig.systemProxy.port}）`,
+    "ok",
+  );
+}
+
+let proxySetupPrompted = false;
+
+async function maybeShowProxySetupGuide(proxyConfig) {
+  if (!proxyConfig?.needsProxySetup || proxySetupPrompted) return;
+  proxySetupPrompted = true;
+  const modal = $("#proxySetupModal");
+  if (!modal) return;
+
+  const systemBlock = $("#proxySetupSystemBlock");
+  const systemText = $("#proxySetupSystemText");
+  if (proxyConfig.systemProxy) {
+    systemBlock?.classList.remove("hidden");
+    if (systemText) {
+      systemText.textContent = `检测到 ${proxyConfig.systemProxy.host}:${proxyConfig.systemProxy.port}，可直接使用。`;
+    }
+  } else {
+    systemBlock?.classList.add("hidden");
+  }
+
+  showProxySetupMessage("", "");
+  openAppModal("proxySetupModal");
+}
+
+function showProxySetupMessage(msg, type) {
+  const el = $("#proxySetupMessage");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = msg ? `message ${type}` : "message";
+}
+
+async function dismissProxySetupGuide() {
+  await fetch("/api/config/proxy/dismiss-guide", { method: "POST" });
+  $("#proxySetupModal")?.close();
+}
+
+async function applySystemProxyFromGuide() {
+  try {
+    showProxySetupMessage("正在应用系统代理...", "info");
+    const res = await fetch("/api/config/proxy/apply-system", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "应用失败");
+    await loadConfig();
+    showProxySetupMessage("已应用系统代理，正在测试网络...", "info");
+    const testRes = await fetch("/api/config/network-test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const testData = await testRes.json();
+    if (!testRes.ok) throw new Error(testData.error || "网络测试失败");
+    appendSystemLog(testData.message || "网络连接正常", "ok");
+    $("#proxySetupModal")?.close();
+  } catch (err) {
+    showProxySetupMessage(err.message, "err");
+  }
+}
+
+function goProxySetupSettings() {
+  $("#proxySetupModal")?.close();
+  switchView("settings");
+  const typeSelect = $("#globalProxyTypeSelect");
+  if (typeSelect) typeSelect.value = "http";
+  updateProxyDetailsVisibility("global");
+  if (!$("#globalProxyHostInput")?.value) $("#globalProxyHostInput").value = "127.0.0.1";
+  if (!$("#globalProxyPortInput")?.value) $("#globalProxyPortInput").value = "7897";
+  $("#globalProxyHostInput")?.focus();
+}
+
+function bindEvents() {
+  bindAppModalDismiss();
+  $$(".nav-item").forEach((item) => {
+    item.addEventListener("click", () => switchView(item.dataset.view));
+  });
+
+  $("#btnHomeManageAccount")?.addEventListener("click", () => switchView("accounts"));
+  $("#btnHomeViewAllPublished")?.addEventListener("click", () => switchView("published"));
+  $("#btnHomeRefreshStats")?.addEventListener("click", () => refreshAllStats());
+
+  $("#btnTestDefaultApi")?.addEventListener("click", testDefaultApi);
+  $("#btnGoAccounts")?.addEventListener("click", () => switchView("accounts"));
+  $("#btnAddAiProfile")?.addEventListener("click", () => openAiProfileModal(null));
+  $("#btnGoAiSettings")?.addEventListener("click", () => switchView("ai"));
+  $("#apiAiProfilesList")?.addEventListener("click", onApiAiProfilesListClick);
+  $("#aiProfileForm")?.addEventListener("submit", saveAiProfileFromModal);
+  $("#btnCancelAiProfile")?.addEventListener("click", () => $("#aiProfileModal")?.close());
+  $("#btnTestAiProfileModal")?.addEventListener("click", testAiProfileFromModal);
+  $("#aiProfileProviderSelect")?.addEventListener("change", onAiProfileProviderChange);
+  $("#btnClearSystemLog")?.addEventListener("click", () => {
+    if ($("#systemLog")) $("#systemLog").innerHTML = "";
+  });
+
+  $("#btnAddAccount").addEventListener("click", () => openAccountModal(null));
+  $("#accountSearchInput")?.addEventListener("input", (e) => {
+    accountListState.query = e.target.value;
+    accountListState.page = 1;
+    renderAccountList();
+  });
+  $("#accountDateFrom")?.addEventListener("change", (e) => {
+    accountListState.dateFrom = e.target.value;
+    accountListState.page = 1;
+    renderAccountList();
+  });
+  $("#accountDateTo")?.addEventListener("change", (e) => {
+    accountListState.dateTo = e.target.value;
+    accountListState.page = 1;
+    renderAccountList();
+  });
+  $("#btnAccountClearFilters")?.addEventListener("click", resetAccountListFilters);
+  $("#btnSaveProxy").addEventListener("click", saveProxy);
+  $("#btnTestNetwork").addEventListener("click", testNetwork);
+  $("#btnSaveBrowser")?.addEventListener("click", saveBrowserPath);
+  $("#btnTestBrowser")?.addEventListener("click", testBrowser);
+  $("#btnProxySetupApplySystem")?.addEventListener("click", applySystemProxyFromGuide);
+  $("#btnProxySetupGoSettings")?.addEventListener("click", goProxySetupSettings);
+  $("#btnProxySetupLater")?.addEventListener("click", dismissProxySetupGuide);
+  $("#globalProxyTypeSelect")?.addEventListener("change", () => updateProxyDetailsVisibility("global"));
+  $("#globalProxyQuickInput")?.addEventListener("change", () => parseProxyQuickInput("global"));
+  $("#globalProxyQuickInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      parseProxyQuickInput("global");
+    }
+  });
+  $("#btnSaveAiConfig").addEventListener("click", saveAiConfig);
+  $("#btnTestAi").addEventListener("click", testAiApi);
+  $("#aiProviderSelect")?.addEventListener("change", onAiProviderChange);
+  $("#btnAddCustomToken")?.addEventListener("click", addCustomTokenFromInput);
+  $("#aiCustomTokenInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addCustomTokenFromInput();
+    }
+  });
+  $("#btnAiGenerateDraft").addEventListener("click", () => aiRun({ publish: false }));
+  $("#btnAiRunNow").addEventListener("click", () => aiRun({ publish: true }));
+  $("#btnAiCancelHosting").addEventListener("click", stopAiHosting);
+  $("#btnAiFillPost").addEventListener("click", aiFillPostModal);
+  $("#btnThemeToggle")?.addEventListener("click", toggleTheme);
+  $("#btnDisclaimer")?.addEventListener("click", () => showLegalModal("disclaimer"));
+  $("#btnLicense")?.addEventListener("click", () => showLegalModal("license"));
+  $("#btnUnbindDevice")?.addEventListener("click", unbindCurrentDevice);
+  $("#btnCloseLegalModal")?.addEventListener("click", () => $("#legalModal")?.close());
+  $("#defaultAccountSelect").addEventListener("change", (e) => setDefaultAccount(e.target.value, { silent: true }));
+
+  $("#accountForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveAccountFromModal();
+  });
+  $("#btnCancelAccountModal").addEventListener("click", () => $("#accountModal").close());
+  $("#accountProxyTypeSelect")?.addEventListener("change", updateAccountProxyDetailsVisibility);
+  $("#accountProxyQuickInput")?.addEventListener("change", parseAccountProxyQuickInput);
+  $("#accountProxyQuickInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      parseAccountProxyQuickInput();
+    }
+  });
+  $("#btnTestAccountKey").addEventListener("click", testAccountKey);
+  $("#btnTestAccountProxy")?.addEventListener("click", testAccountProxy);
+  $("#btnClosePublishedPosts").addEventListener("click", () => $("#publishedPostsModal").close());
+  $("#btnDonePublishedPosts").addEventListener("click", () => $("#publishedPostsModal").close());
+  $("#btnImportPublishedPosts").addEventListener("click", importPublishedPostsToList);
+
+  $("#btnAddPost").addEventListener("click", () => openPostModal(null));
+  $("#btnImport").addEventListener("click", () => openAppModal("importModal"));
+  $("#btnClearDrafts").addEventListener("click", clearDrafts);
+  $("#btnClearPublished").addEventListener("click", clearPublished);
+  $("#btnDeleteSelected")?.addEventListener("click", deleteSelectedDrafts);
+  $("#btnPublish").addEventListener("click", startBatchPublish);
+
+  $("#btnSelectDrafts").addEventListener("click", selectDraftsOnly);
+  $("#btnSelectNone").addEventListener("click", selectNone);
+  $("#btnApplyBulkAccount")?.addEventListener("click", applyBulkAccountToSelected);
+  $("#btnRefreshAllStats").addEventListener("click", () => refreshAllStats());
+  $("#btnFetchHistoryPosts").addEventListener("click", () => fetchHistoryForCurrentAccount());
+  $("#historyAccountSelect")?.addEventListener("change", (e) => {
+    selectedHistoryAccountId = e.target.value;
+  });
+  $("#publishedPostsAccountSelect")?.addEventListener("change", () => reloadPublishedPostsForSelectedAccount());
+  $("#btnExportExcel").addEventListener("click", exportToExcel);
+  $("#btnClearAlerts").addEventListener("click", clearAlerts);
+  $("#autoRefreshEnabled").addEventListener("change", setupAutoRefresh);
+  $("#autoRefreshMinutes").addEventListener("change", setupAutoRefresh);
+  $("#viewAlertThreshold").addEventListener("change", setupAutoRefresh);
+  $("#notifyBrowser").addEventListener("change", setupAutoRefresh);
+  $("#selectAllCheckbox").addEventListener("change", (e) => toggleSelectAll(e.target.checked));
+
+  $$(".filter-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      $$(".filter-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      currentFilter = tab.dataset.filter;
+      renderPosts();
+    });
+  });
+
+  $("#postList").addEventListener("change", (e) => {
+    if (e.target.classList.contains("post-select")) {
+      const post = posts.find((p) => p.id === e.target.dataset.id);
+      if (!post || publishing) return;
+      post.selected = e.target.checked;
+      saveDrafts();
+      updatePublishBtn();
+      updateSelectAllCheckbox();
+      return;
+    }
+    if (e.target.classList.contains("post-account-select")) {
+      const postId = e.target.dataset.id;
+      const accountId = e.target.value;
+      if (!postId || !accountId || publishing) return;
+      const post = posts.find((p) => p.id === postId);
+      if (!post) return;
+      post.accountId = accountId;
+      post.accountName = getAccountName(accountId);
+      saveDrafts();
+      showAppToast(`已设为「${post.accountName}」`, "ok");
+    }
+  });
+
+  $("#postForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    savePostFromModal();
+  });
+  $("#btnCancelModal").addEventListener("click", () => $("#postModal").close());
+
+  $("#postText").addEventListener("input", () => {
+    $("#charCount").textContent = $("#postText").value.length;
+  });
+
+  $("#postImages").addEventListener("change", handleImageSelect);
+
+  $("#btnCancelImport").addEventListener("click", () => $("#importModal").close());
+  $("#btnConfirmImport").addEventListener("click", confirmImport);
+
+  $$(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      $$(".tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      const name = tab.dataset.tab;
+      $("#tabJson").classList.toggle("hidden", name !== "json");
+      $("#tabText").classList.toggle("hidden", name !== "text");
+    });
+  });
+}
+
+async function setDefaultAccount(accountId, { silent = false } = {}) {
+  if (!accountId || accountId === getDefaultAccountId()) return;
+  try {
+    const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/default`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "设置失败");
+    await loadAccounts();
+    await loadConfig();
+    if (!silent) showAccountMessage("已设为默认账号", "ok");
+  } catch (err) {
+    if (!silent) showAccountMessage(err.message, "err");
+    renderAccountSelects();
+  }
+}
+
+function openAccountModal(accountId) {
+  const isEdit = Boolean(accountId);
+  $("#editAccountId").value = accountId || "";
+  $("#accountModalTitle").textContent = isEdit ? "编辑账号" : "添加账号";
+  $("#accountNameInput").value = isEdit ? getAccountName(accountId) : "";
+  $("#accountUsernameInput").value = isEdit ? getAccountUsername(accountId) : "";
+  applyAccountProxyToUI(isEdit ? getAccountProxyConfig(accountId) : { type: "global" });
+  $("#accountApiKeyInput").value = "";
+  $("#accountCookieInput").value = "";
+  $("#accountApiKeyInput").required = !isEdit;
+  $("#apiKeyRequired").style.display = isEdit ? "none" : "inline";
+  $("#apiKeyHint").classList.toggle("hidden", !isEdit);
+  showAccountFormMessage("", "");
+  openAppModal("accountModal");
+}
+
+function formatRemotePostTime(ts) {
+  if (!ts) return "未知时间";
+  return formatTime(ts);
+}
+
+function canFetchAccountHistory(accountId) {
+  const acc = accountStore.accounts.find((a) => a.id === accountId);
+  const postRef = findLocalPostRefForAccount(accountId);
+  return Boolean(postRef || acc?.hasCookie || acc?.username || acc?.hasSquareUid || acc?.hasAnchorPost);
+}
+
+function renderPublishedPostsList(posts, emptyText = "暂无已发布帖子") {
+  const list = $("#publishedPostsList");
+  if (!posts.length) {
+    list.innerHTML = `<div class="account-empty">${escapeHtml(emptyText)}</div>`;
+    return;
+  }
+
+  list.innerHTML = posts
+    .map(
+      (post) => `
+    <div class="published-post-item">
+      <div class="post-text">${escapeHtml(postPreview(post.text, 180))}</div>
+      <div class="published-post-meta">
+        ${post.title ? `<span>标题: ${escapeHtml(post.title)}</span>` : ""}
+        <span>${formatRemotePostTime(post.publishedAt)}</span>
+        <span>浏览 ${post.viewCount ?? "-"}</span>
+        <span>点赞 ${post.likeCount ?? "-"}</span>
+        <span>评论 ${post.commentCount ?? "-"}</span>
+        ${post.shareLink ? `<a href="${post.shareLink}" target="_blank" rel="noopener">查看</a>` : ""}
+      </div>
+    </div>`
+    )
+    .join("");
+}
+
+function findLocalPostRefForAccount(accountId) {
+  const defaultId = getDefaultAccountId();
+  const post = posts.find((p) => {
+    if (p.publishState !== "published") return false;
+    if (!(p.result?.id || p.result?.shareLink)) return false;
+    if (p.accountId === accountId) return true;
+    if (!p.accountId && accountId === defaultId) return true;
+    return false;
+  });
+  return post?.result?.id || extractPostIdFromRef(post?.result?.shareLink) || post?.result?.shareLink || null;
+}
+
+function extractPostIdFromRef(ref) {
+  if (!ref) return null;
+  const value = String(ref).trim();
+  if (/^\d+$/.test(value)) return value;
+  const m = value.match(/\/post\/(\d+)/i);
+  return m ? m[1] : null;
+}
+
+function localPublishedPostsForAccount(accountId) {
+  const defaultId = getDefaultAccountId();
+  return posts
+    .filter((p) => {
+      if (p.publishState !== "published") return false;
+      const ref = p.result?.id || p.result?.shareLink;
+      if (!ref) return false;
+      if (p.accountId === accountId) return true;
+      if (!p.accountId && accountId === defaultId) return true;
+      return false;
+    })
+    .map((p) => ({
+      id: p.result.id || extractPostIdFromRef(p.result.shareLink),
+      text: p.text,
+      title: p.title || "",
+      shareLink: p.result.shareLink,
+      publishedAt: p.publishedAt || Date.now(),
+      viewCount: p.stats?.viewCount ?? null,
+      likeCount: p.stats?.likeCount ?? null,
+      commentCount: p.stats?.commentCount ?? null,
+      shareCount: p.stats?.shareCount ?? null,
+      source: "local",
+    }));
+}
+
+async function syncPublishedPostsToServerCache(accountId, list) {
+  if (!accountId || !list?.length) return;
+  try {
+    await fetch(`/api/accounts/${encodeURIComponent(accountId)}/posts/cache`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ posts: list }),
+    });
+  } catch {
+    // ignore sync errors
+  }
+}
+
+async function syncAllLocalPublishedToCache() {
+  const defaultId = getDefaultAccountId();
+  if (!defaultId) return;
+  const byAccount = {};
+  for (const p of posts) {
+    const postId = p.result?.id || extractPostIdFromRef(p.result?.shareLink);
+    if (p.publishState !== "published" || !postId) continue;
+    const aid = p.accountId || defaultId;
+    if (!byAccount[aid]) byAccount[aid] = [];
+    byAccount[aid].push({
+      id: postId,
+      text: p.text,
+      title: p.title || "",
+      shareLink: p.result.shareLink,
+      publishedAt: p.publishedAt || Date.now(),
+      viewCount: p.stats?.viewCount ?? null,
+      likeCount: p.stats?.likeCount ?? null,
+      commentCount: p.stats?.commentCount ?? null,
+      shareCount: p.stats?.shareCount ?? null,
+      source: "local",
+    });
+  }
+  await Promise.all(
+    Object.entries(byAccount).map(([accountId, list]) => syncPublishedPostsToServerCache(accountId, list)),
+  );
+}
+
+function showPublishedPostsEmptyState(accountId, { statusMessage = NO_HISTORY_DETECTED_MSG, listMessage = NO_HISTORY_DETECTED_MSG } = {}) {
+  publishedPostsCache = { accountId, posts: [] };
+  renderAccountSelectOptions($("#publishedPostsAccountSelect"), accountId);
+  const picker = document.querySelector(".published-posts-account-picker");
+  if (picker) picker.classList.toggle("hidden", accountStore.accounts.length <= 1);
+  $("#publishedPostsTitle").textContent = `${getAccountName(accountId)} · 广场历史帖子`;
+  $("#publishedPostsSubtitle").textContent = "";
+  $("#publishedPostsStatus").textContent = statusMessage;
+  $("#publishedPostsStatus").className = "message info";
+  renderPublishedPostsList([], listMessage);
+  $("#btnImportPublishedPosts").disabled = true;
+  openAppModal("publishedPostsModal");
+}
+
+function showAccountNeedsPublishHint(accountId) {
+  showPublishedPostsEmptyState(accountId, {
+    statusMessage:
+      "该功能需要发布成功一条帖子才能拉取历史。请先使用本工具发布至少 1 条帖子，系统将从该帖子自动识别用户名；也可配置 Cookie 或填写广场用户名。",
+    listMessage: NO_HISTORY_DETECTED_MSG,
+  });
+}
+
+async function fetchHistoryForCurrentAccount() {
+  const accountId = $("#historyAccountSelect")?.value || getDefaultAccountId();
+  if (!accountId) return alert("请先添加账号");
+  const accountName = getAccountName(accountId);
+  if (!confirm(`拉取「${accountName}」的广场历史帖子\n\n${HISTORY_FETCH_CONFIRM_MSG}`)) return;
+
+  if (!canFetchAccountHistory(accountId)) {
+    showPublishedPostsEmptyState(accountId);
+    return;
+  }
+
+  const postRef = findLocalPostRefForAccount(accountId);
+  await showPublishedPostsModal(accountId, { postRef });
+}
+
+async function reloadPublishedPostsForSelectedAccount() {
+  const accountId = $("#publishedPostsAccountSelect")?.value;
+  if (!accountId) return;
+  if (!canFetchAccountHistory(accountId)) {
+    showPublishedPostsEmptyState(accountId);
+    return;
+  }
+  const postRef = findLocalPostRefForAccount(accountId);
+  await showPublishedPostsModal(accountId, { postRef });
+}
+
+async function discoverAccountFromPost(accountId, postRef) {
+  if (!accountId || !postRef) return null;
+  const before = accountStore.accounts.find((a) => a.id === accountId);
+  const hadIdentity = Boolean(before?.username || before?.hasSquareUid || before?.hasAnchorPost);
+
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/discover-from-post`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ postRef }),
+  });
+  const data = await res.json();
+  if (!res.ok) return null;
+
+  await loadAccounts();
+  return { ...data, firstDiscovery: !hadIdentity };
+}
+
+async function showPublishedPostsModal(accountId, { postRef } = {}) {
+  publishedPostsCache = { accountId, posts: [] };
+  const accountName = getAccountName(accountId);
+  renderAccountSelectOptions($("#publishedPostsAccountSelect"), accountId);
+  const picker = document.querySelector(".published-posts-account-picker");
+  if (picker) picker.classList.toggle("hidden", accountStore.accounts.length <= 1);
+  $("#publishedPostsTitle").textContent = `${accountName} · 广场历史帖子`;
+  $("#publishedPostsSubtitle").textContent = "正在从币安广场拉取...";
+  $("#publishedPostsStatus").textContent = "正在加载已发布帖子，请稍候...";
+  $("#publishedPostsStatus").className = "message info";
+  $("#publishedPostsList").innerHTML = "";
+  $("#btnImportPublishedPosts").disabled = true;
+  openAppModal("publishedPostsModal");
+
+  try {
+    const ref = postRef || findLocalPostRefForAccount(accountId);
+    let url = `/api/accounts/${encodeURIComponent(accountId)}/posts?limit=20`;
+    if (ref) url += `&postRef=${encodeURIComponent(ref)}`;
+
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data.error || "加载失败");
+      err.code = data.code;
+      throw err;
+    }
+
+    publishedPostsCache = { accountId, posts: data.posts || [] };
+    await loadAccounts();
+
+    const identity = [
+      data.displayName,
+      data.username ? `@${data.username}` : "",
+      data.discoveredFromPost ? "通过已发布帖子识别" : "",
+      data.source === "cache" ? "本地缓存" : data.source === "openApi" ? "OpenAPI" : data.source === "browser" ? "广场 API" : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    $("#publishedPostsSubtitle").textContent = identity
+      ? `${identity} · 共 ${publishedPostsCache.posts.length} 条`
+      : `共 ${publishedPostsCache.posts.length} 条`;
+
+    let statusText = "";
+    let statusClass = "message info";
+    if (data.remoteError && data.fromCache) {
+      statusText = `${data.hint || "远程拉取失败"}：${data.remoteError}`;
+      statusClass = publishedPostsCache.posts.length ? "message ok" : "message err";
+    } else if (data.hint && !publishedPostsCache.posts.length) {
+      statusText = data.hint;
+    } else if (data.hint && publishedPostsCache.posts.length) {
+      statusText = data.hint;
+      statusClass = "message ok";
+    } else {
+      const hasIdentity = Boolean(
+        data.username || data.squareUid || data.displayName || data.discoveredFromPost || data.source,
+      );
+      statusText = publishedPostsCache.posts.length
+        ? "以下为该账号在币安广场已发布的帖子，可导入到本地列表查看互动数据"
+        : hasIdentity
+          ? "该账号暂无已发布的广场帖子"
+          : NO_HISTORY_DETECTED_MSG;
+    }
+    $("#publishedPostsStatus").textContent = statusText;
+    $("#publishedPostsStatus").className = statusClass;
+
+    const listEmptyText = publishedPostsCache.posts.length
+      ? "暂无已发布帖子"
+      : statusText.includes("暂无已发布")
+        ? "该账号暂无已发布的广场帖子"
+        : NO_HISTORY_DETECTED_MSG;
+    renderPublishedPostsList(publishedPostsCache.posts, listEmptyText);
+    $("#btnImportPublishedPosts").disabled = publishedPostsCache.posts.length === 0;
+  } catch (err) {
+    const localFallback = localPublishedPostsForAccount(accountId);
+    if (localFallback.length) {
+      await syncPublishedPostsToServerCache(accountId, localFallback);
+      publishedPostsCache = { accountId, posts: localFallback };
+      $("#publishedPostsStatus").textContent = `远程拉取失败，已显示本地记录（${localFallback.length} 条）并写入缓存`;
+      $("#publishedPostsStatus").className = "message ok";
+      $("#publishedPostsSubtitle").textContent = `本地缓存 · 共 ${localFallback.length} 条`;
+      renderPublishedPostsList(localFallback);
+      $("#btnImportPublishedPosts").disabled = false;
+      return;
+    }
+    const isNeedPublish = err.code === "NEED_PUBLISH_FIRST";
+    $("#publishedPostsStatus").textContent = isNeedPublish
+      ? "该功能需要发布成功一条帖子才能拉取，否则系统获取不到历史发布的帖子"
+      : err.message;
+    $("#publishedPostsStatus").className = isNeedPublish ? "message info" : "message err";
+    $("#publishedPostsSubtitle").textContent = "";
+    renderPublishedPostsList([], isNeedPublish ? NO_HISTORY_DETECTED_MSG : "拉取失败");
+  }
+}
+
+function importPublishedPostsToList() {
+  const { accountId, posts: remotePosts } = publishedPostsCache;
+  if (!accountId || !remotePosts.length) {
+    showAppToast("没有可导入的帖子，请先拉取广场历史帖子", "info");
+    return;
+  }
+
+  const accountName = getAccountName(accountId);
+  const existingIds = new Set(
+    posts.map((p) => p.result?.id).filter(Boolean).map(String)
+  );
+  let imported = 0;
+
+  try {
+    for (const rp of remotePosts) {
+      if (!rp.id || existingIds.has(String(rp.id))) continue;
+      existingIds.add(String(rp.id));
+      posts.push({
+        id: generateId(),
+        text: rp.text || "",
+        title: rp.title || "",
+        imagePaths: [],
+        accountId,
+        accountName,
+        selected: false,
+        publishState: "published",
+        result: { id: rp.id, shareLink: rp.shareLink },
+        error: null,
+        publishedAt: rp.publishedAt || Date.now(),
+        createdAt: Date.now(),
+        stats: {
+          viewCount: rp.viewCount,
+          likeCount: rp.likeCount,
+          commentCount: rp.commentCount,
+          shareCount: rp.shareCount,
+          fetchedAt: Date.now(),
+        },
+      });
+      imported++;
+    }
+
+    saveDrafts();
+  } catch (err) {
+    console.error("importPublishedPostsToList failed:", err);
+    showAppToast(`导入失败：${err.message || "保存本地数据出错"}`, "err");
+    $("#publishedPostsStatus").textContent = `导入失败：${err.message || "保存本地数据出错"}`;
+    $("#publishedPostsStatus").className = "message err";
+    return;
+  }
+
+  const message =
+    imported > 0 ? `已成功导入 ${imported} 条帖子到已发布列表` : "帖子已在列表中，无需重复导入";
+  const logType = imported > 0 ? "ok" : "info";
+  const statusType = imported > 0 ? "ok" : "info";
+
+  $("#publishedPostsStatus").textContent = message;
+  $("#publishedPostsStatus").className = `message ${statusType}`;
+  appendSystemLog(message, logType);
+
+  if (imported > 0) {
+    $("#publishedPostsModal").close();
+    switchView("published");
+    showPublishedImportStatus(message, statusType);
+    setTimeout(() => showAppToast(message, statusType), 50);
+    return;
+  }
+
+  showAppToast(message, statusType);
+}
+
+async function saveAccountFromModal() {
+  const accountId = $("#editAccountId").value;
+  const name = $("#accountNameInput").value.trim();
+  const username = $("#accountUsernameInput").value.trim();
+  const proxyConfig = collectAccountProxyFromUI();
+  const apiKey = $("#accountApiKeyInput").value.trim();
+  const cookieRaw = $("#accountCookieInput").value;
+
+  if (!name) return showAccountFormMessage("请输入账号名称", "err");
+  if (!accountId && !apiKey) return showAccountFormMessage("请输入 API Key", "err");
+  if (["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
+    if (!proxyConfig.host || !proxyConfig.port) {
+      return showAccountFormMessage("请填写代理主机和端口", "err");
+    }
+  }
+
+  const payload = { name, username, proxyConfig };
+  if (apiKey) payload.apiKey = apiKey;
+  if (accountId) {
+    if (cookieRaw.length > 0 && cookieRaw.trim() === "") payload.cookie = "";
+    else if (cookieRaw !== "") payload.cookie = cookieRaw.trim();
+  } else if (cookieRaw.trim()) {
+    payload.cookie = cookieRaw.trim();
+  }
+
+  try {
+    const url = accountId ? `/api/accounts/${encodeURIComponent(accountId)}` : "/api/accounts";
+    const res = await fetch(url, {
+      method: accountId ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "保存失败");
+
+    const savedId = accountId || data.account?.id;
+    closeAppModals();
+    await loadAccounts();
+    await loadConfig();
+    showAccountMessage(accountId ? "账号已更新" : "账号已添加", "ok");
+
+    if (!savedId) return;
+
+    const acc = accountStore.accounts.find((a) => a.id === savedId);
+    const postRef = findLocalPostRefForAccount(savedId);
+    const canTryFetch = postRef || acc?.hasCookie || acc?.username || acc?.hasSquareUid || acc?.hasAnchorPost;
+
+    if (canTryFetch) {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await showPublishedPostsModal(savedId, { postRef });
+    } else {
+      showAccountNeedsPublishHint(savedId);
+    }
+  } catch (err) {
+    showAccountFormMessage(err.message, "err");
+  }
+}
+
+async function deleteAccount(accountId) {
+  const name = getAccountName(accountId);
+  if (!confirm(`确定删除账号「${name}」？`)) return;
+  try {
+    const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "删除失败");
+    await loadAccounts();
+    await loadConfig();
+    showAccountMessage("账号已删除", "ok");
+  } catch (err) {
+    showAccountMessage(err.message, "err");
+  }
+}
+
+async function testAccountProxy() {
+  const accountId = $("#editAccountId").value || undefined;
+  const proxyConfig = collectAccountProxyFromUI();
+  if (!["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
+    showAccountFormMessage("请先选择自定义代理类型（Socks5 / HTTP 等）", "err");
+    return;
+  }
+  if (!proxyConfig.host || !proxyConfig.port) {
+    showAccountFormMessage("请填写代理主机和端口", "err");
+    return;
+  }
+  showAccountFormMessage("正在检测代理连通性...", "info");
+  try {
+    const res = await fetch("/api/config/network-test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proxyConfig, accountId }),
+    });
+    const data = await res.json();
+    showAccountFormMessage(res.ok ? data.message : data.error || "代理检测失败", res.ok ? "ok" : "err");
+  } catch {
+    showAccountFormMessage("无法连接本地服务", "err");
+  }
+}
+
+async function testAccountKey() {
+  const accountId = $("#editAccountId").value;
+  const apiKey = $("#accountApiKeyInput").value.trim();
+  const proxyConfig = collectAccountProxyFromUI();
+  try {
+    const res = await fetch("/api/config/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: apiKey || undefined,
+        accountId: accountId || undefined,
+        proxyConfig,
+      }),
+    });
+    const data = await res.json();
+    showAccountFormMessage(res.ok ? data.message : data.error || "验证失败", res.ok ? "ok" : "err");
+  } catch {
+    showAccountFormMessage("请求失败，请检查本地服务是否运行", "err");
+  }
+}
+
+function showAccountMessage(msg, type) {
+  const el = $("#accountMessage");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = `message ${type}`;
+}
+
+function showAccountFormMessage(msg, type) {
+  const el = $("#accountFormMessage");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = msg ? `message ${type}` : "message";
+}
+
+async function saveProxy() {
+  const proxyConfig = collectProxyFromUI("global");
+  if (["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
+    if (!proxyConfig.host || !proxyConfig.port) {
+      showProxyMessage("请填写代理主机和端口", "err");
+      return;
+    }
+  }
+  try {
+    const res = await fetch("/api/config/proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proxyConfig }),
+    });
+    const data = await res.json();
+    if (res.ok && data.proxyConfig) {
+      globalProxyConfig = data.proxyConfig;
+      applyProxyToUI("global", data.proxyConfig);
+    }
+    showProxyMessage(res.ok ? "全局代理已保存，使用全局代理的账号将统一走此配置" : data.error || "保存失败", res.ok ? "ok" : "err");
+    updateApiStatusCard({ proxyConfig: data.proxyConfig || globalProxyConfig });
+  } catch {
+    showProxyMessage("无法连接本地服务", "err");
+  }
+}
+
+async function testNetwork() {
+  const proxyConfig = collectProxyFromUI("global");
+  showProxyMessage("正在测试网络...", "info");
+  try {
+    const res = await fetch("/api/config/network-test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proxyConfig }),
+    });
+    const data = await res.json();
+    showProxyMessage(res.ok ? data.message : data.error || "网络测试失败", res.ok ? "ok" : "err");
+  } catch {
+    showProxyMessage("无法连接本地服务", "err");
+  }
+}
+
+function showProxyMessage(msg, type) {
+  const el = $("#proxyMessage");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function showBrowserMessage(msg, type) {
+  const el = $("#browserMessage");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = msg ? `message ${type}` : "message";
+}
+
+async function saveBrowserPath() {
+  const browserPath = ($("#browserPathInput")?.value || "").trim();
+  try {
+    const res = await fetch("/api/config/browser", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browserPath }),
+    });
+    const data = await res.json();
+    showBrowserMessage(
+      res.ok ? (browserPath ? "浏览器路径已保存" : "已清除自定义路径，将使用 Playwright 内置浏览器") : data.error || "保存失败",
+      res.ok ? "ok" : "err",
+    );
+  } catch {
+    showBrowserMessage("无法连接本地服务", "err");
+  }
+}
+
+async function testBrowser() {
+  const browserPath = ($("#browserPathInput")?.value || "").trim();
+  showBrowserMessage("正在测试浏览器启动...", "info");
+  try {
+    const res = await fetch("/api/config/browser/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browserPath }),
+    });
+    const data = await res.json();
+    showBrowserMessage(res.ok ? data.message : data.error || "测试失败", res.ok ? "ok" : "err");
+  } catch {
+    showBrowserMessage("无法连接本地服务", "err");
+  }
+}
+
+function showAiMessage(msg, type) {
+  const el = $("#aiMessage");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function formatTime(ts, compact = false) {
+  if (!ts) return compact ? "" : "—";
+  const d = new Date(ts);
+  if (compact) {
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+  return d.toLocaleString("zh-CN");
+}
+
+let aiRunning = false;
+let aiCustomTokens = [];
+/** @type {Record<string, string[]>} */
+let aiHostedCustomTokens = {};
+/** @type {{contentStyleOptions:Array,marketSentimentOptions:Array,availableTokens:Array}} */
+let aiUiOptions = {
+  contentStyleOptions: DEFAULT_CONTENT_STYLE_OPTIONS,
+  marketSentimentOptions: DEFAULT_SENTIMENT_OPTIONS,
+  availableTokens: DEFAULT_AVAILABLE_TOKENS,
+};
+/** @type {Set<string>} */
+let aiHostedExpanded = new Set();
+/** @type {Array<{id:string,label:string,models:Array<{id:string,label:string}>,keyHint:string,keyUrl:string,defaultModel:string,allowCustomBaseUrl?:boolean,allowCustomModel?:boolean}>} */
+let aiProvidersCache = [];
+let aiProfilesCache = [];
+let defaultAiProfileIdCache = null;
+
+function buildLegacyAiProfileFromConfig(data = {}) {
+  const id = data.defaultAiProfileId || "legacy-default";
+  return {
+    id,
+    name: `${data.providerLabel || data.provider || "AI"}（默认）`,
+    enabled: true,
+    provider: data.provider || "zhipu",
+    providerLabel: data.providerLabel || data.provider || "AI",
+    baseUrl: data.baseUrl || "",
+    model: data.model || "",
+    hasApiKey: true,
+    maskedKey: data.maskedKey || "",
+    keyHint: data.keyHint,
+    keyUrl: data.keyUrl,
+    allowCustomBaseUrl: data.allowCustomBaseUrl,
+    allowCustomModel: data.allowCustomModel,
+    models: data.models,
+    defaultModel: data.model,
+    createdAt: Date.now(),
+  };
+}
+
+function normalizeAiProfilesFromConfig(data = {}) {
+  let profiles = [];
+  const incoming = data.aiProfiles;
+  if (Array.isArray(incoming) && incoming.length) {
+    profiles = incoming.map((item) => ({
+      ...item,
+      hasApiKey: item.hasApiKey ?? Boolean(item.maskedKey || item.apiKey),
+    }));
+  }
+
+  const hasLegacyKey = Boolean(data.hasApiKey || data.maskedKey);
+  if (!profiles.some((item) => item.hasApiKey) && hasLegacyKey) {
+    const legacyProfile = buildLegacyAiProfileFromConfig(data);
+    const existingIndex = profiles.findIndex((item) => item.id === legacyProfile.id);
+    if (existingIndex >= 0) {
+      profiles[existingIndex] = { ...profiles[existingIndex], ...legacyProfile, hasApiKey: true };
+    } else if (profiles.length) {
+      profiles[0] = { ...profiles[0], ...legacyProfile, id: profiles[0].id, hasApiKey: true };
+    } else {
+      profiles = [legacyProfile];
+    }
+  }
+
+  return profiles;
+}
+
+function buildHostedAccountsFallback(data = {}) {
+  if (!accountStore.accounts.length) return [];
+  const defaultId = data.accountId || getDefaultAccountId();
+  return accountStore.accounts.map((acc) => ({
+    accountId: acc.id,
+    accountName: acc.name,
+    isDefault: acc.isDefault,
+    enabled: acc.id === defaultId || Boolean(acc.isDefault),
+    aiProfileId: null,
+    selectedTokens: data.selectedTokens || [],
+    customTokens: data.customTokens || [],
+    marketSentiment: data.marketSentiment || "auto",
+    contentStyles: data.contentStyles || ["casual"],
+  }));
+}
+
+function normalizeHostedAccountsFromConfig(data = {}) {
+  const hosted = data.hostedAccounts;
+  if (Array.isArray(hosted) && hosted.length) {
+    if (!accountStore.accounts.length) return hosted;
+    const map = new Map(hosted.map((item) => [item.accountId, item]));
+    return accountStore.accounts.map((acc) => {
+      const existing = map.get(acc.id);
+      if (existing) {
+        return {
+          ...existing,
+          accountName: existing.accountName || acc.name,
+          isDefault: existing.isDefault ?? Boolean(acc.isDefault),
+        };
+      }
+      return {
+        accountId: acc.id,
+        accountName: acc.name,
+        isDefault: acc.isDefault,
+        enabled: false,
+        aiProfileId: null,
+        selectedTokens: [],
+        customTokens: [],
+        marketSentiment: "auto",
+        contentStyles: ["casual"],
+      };
+    });
+  }
+  return buildHostedAccountsFallback(data);
+}
+
+function normalizeAiConfigResponse(data) {
+  if (!data) return data;
+  const aiProfiles = normalizeAiProfilesFromConfig(data);
+  const defaultAiProfileId = data.defaultAiProfileId || aiProfiles[0]?.id || null;
+  const hostedAccounts = normalizeHostedAccountsFromConfig(data);
+  const enabledAiProfileCount = aiProfiles.filter((item) => item.enabled && item.hasApiKey).length;
+  const enabledHostedCount = hostedAccounts.filter((item) => item.enabled).length;
+  return {
+    ...data,
+    aiProfiles,
+    defaultAiProfileId,
+    hostedAccounts,
+    enabledAiProfileCount,
+    enabledHostedCount,
+    hasApiKey: data.hasApiKey || enabledAiProfileCount > 0,
+  };
+}
+
+function getAiProviderFromCache(providerId) {
+  return aiProvidersCache.find((item) => item.id === providerId) || aiProvidersCache[0] || null;
+}
+
+function renderAiProviderOptions(providers = [], selectedId = "zhipu", selectEl = null) {
+  const select = selectEl || $("#aiProviderSelect");
+  if (!select) return;
+  if (providers.length) {
+    aiProvidersCache = providers;
+  }
+  if (!aiProvidersCache.length) return;
+  const value = aiProvidersCache.some((item) => item.id === selectedId) ? selectedId : aiProvidersCache[0].id;
+  select.innerHTML = aiProvidersCache
+    .map((item) => `<option value="${item.id}" ${item.id === value ? "selected" : ""}>${escapeHtml(item.label)}</option>`)
+    .join("");
+  select.value = value;
+}
+
+async function loadAiProvidersFallback() {
+  if (aiProvidersCache.length) return aiProvidersCache;
+  try {
+    const res = await fetch("/ai-providers.json?v=1");
+    if (res.ok) {
+      const data = await res.json();
+      if (data.providers?.length) {
+        aiProvidersCache = data.providers;
+        return aiProvidersCache;
+      }
+    }
+  } catch {
+    // ignore static fallback errors
+  }
+  return aiProvidersCache;
+}
+
+async function resolveAiProviders(apiProviders) {
+  if (apiProviders?.length) return apiProviders;
+  try {
+    const res = await fetch("/api/ai/providers");
+    if (res.ok) {
+      const data = await res.json();
+      if (data.providers?.length) {
+        aiProvidersCache = data.providers;
+        return aiProvidersCache;
+      }
+    }
+  } catch {
+    // ignore api fallback errors
+  }
+  return loadAiProvidersFallback();
+}
+
+function renderAiModelOptions(provider, selectedModel = "", selectEl = null) {
+  const select = selectEl || $("#aiModelSelect");
+  if (!select || !provider) return;
+  if (!provider.models?.length) {
+    select.innerHTML = `<option value="">请选择模型</option>`;
+    return;
+  }
+  const fallback = provider.defaultModel || provider.models[0]?.id || "";
+  const value = selectedModel && provider.models.some((item) => item.id === selectedModel) ? selectedModel : fallback;
+  select.innerHTML = provider.models
+    .map(
+      (item) =>
+        `<option value="${escapeHtml(item.id)}" ${item.id === value ? "selected" : ""}>${escapeHtml(item.label)}</option>`
+    )
+    .join("");
+  select.value = value;
+}
+
+function updateAiProviderFields(provider, scope = "main") {
+  if (!provider) return;
+
+  const fieldMap = {
+    main: {
+      keyInput: "#aiApiKeyInput",
+      keyLink: "#aiKeyHelpLink",
+      baseUrlWrap: "#aiBaseUrlWrap",
+      modelSelectWrap: "#aiModelSelectWrap",
+      customModelWrap: "#aiCustomModelWrap",
+    },
+    profile: {
+      keyInput: "#aiProfileApiKeyInput",
+      keyLink: "#aiProfileKeyHelpLink",
+      baseUrlWrap: "#aiProfileBaseUrlWrap",
+      modelSelectWrap: "#aiProfileModelSelectWrap",
+      customModelWrap: "#aiProfileCustomModelWrap",
+    },
+  };
+  const fields = fieldMap[scope] || fieldMap.main;
+  const keyInput = $(fields.keyInput);
+  const keyLink = $(fields.keyLink);
+  const baseUrlWrap = $(fields.baseUrlWrap);
+  const modelSelectWrap = $(fields.modelSelectWrap);
+  const customModelWrap = $(fields.customModelWrap);
+
+  if (keyInput) {
+    keyInput.placeholder =
+      scope === "profile" && $("#aiProfileEditId")?.value
+        ? `${provider.keyHint || "API Key"}（留空表示不修改）`
+        : provider.keyHint || "API Key";
+  }
+
+  if (keyLink) {
+    if (provider.keyUrl) {
+      keyLink.href = provider.keyUrl;
+      keyLink.textContent = `获取 ${provider.label} API Key`;
+      keyLink.classList.remove("hidden");
+    } else {
+      keyLink.classList.add("hidden");
+    }
+  }
+
+  baseUrlWrap?.classList.toggle("hidden", !provider.allowCustomBaseUrl);
+  const isCustom = provider.id === "custom";
+  modelSelectWrap?.classList.toggle("hidden", isCustom);
+  customModelWrap?.classList.toggle("hidden", !isCustom);
+}
+
+function generateAiProfileId() {
+  return `aip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getAiProfileModelFromUI() {
+  const providerId = $("#aiProfileProviderSelect")?.value || "zhipu";
+  if (providerId === "custom") {
+    return $("#aiProfileCustomModelInput")?.value.trim() || "";
+  }
+  return $("#aiProfileModelSelect")?.value || "";
+}
+
+function onAiProfileProviderChange() {
+  const provider = getAiProviderFromCache($("#aiProfileProviderSelect")?.value);
+  if (!provider) return;
+  renderAiModelOptions(provider, provider.defaultModel, $("#aiProfileModelSelect"));
+  updateAiProviderFields(provider, "profile");
+}
+
+function buildAiProfileSelectOptions(selectedId, profiles = aiProfilesCache) {
+  const enabled = profiles.filter((item) => item.enabled && item.hasApiKey);
+  return `
+    <option value="">默认 AI</option>
+    ${enabled
+      .map(
+        (item) =>
+          `<option value="${escapeHtml(item.id)}" ${item.id === selectedId ? "selected" : ""}>${escapeHtml(item.name)}</option>`,
+      )
+      .join("")}
+  `;
+}
+
+function getAiProfileName(profileId) {
+  if (!profileId) return "默认 AI";
+  return aiProfilesCache.find((item) => item.id === profileId)?.name || "指定 AI";
+}
+
+function renderAiProfilesList(profiles = aiProfilesCache, defaultId = defaultAiProfileIdCache) {
+  const container = $("#apiAiProfilesList");
+  if (!container) return;
+
+  if (!profiles.length) {
+    container.innerHTML = `<div class="account-empty">尚未添加 AI API，点击「添加 AI API」开始配置</div>`;
+    return;
+  }
+
+  container.innerHTML = profiles
+    .map((profile) => {
+      const isDefault = profile.id === defaultId;
+      return `
+      <div class="api-ai-profile-card ${profile.enabled ? "is-enabled" : ""} ${isDefault ? "is-default" : ""}" data-profile-id="${escapeHtml(profile.id)}">
+        <div class="api-ai-profile-head">
+          <div class="api-ai-profile-title">
+            <strong>${escapeHtml(profile.name)}</strong>
+            ${isDefault ? '<span class="badge badge-green account-default-badge">默认</span>' : ""}
+            ${!profile.enabled ? '<span class="badge">已停用</span>' : ""}
+          </div>
+          <div class="api-ai-profile-actions">
+            <button type="button" class="btn btn-ghost btn-sm" data-action="test" data-profile-id="${escapeHtml(profile.id)}">测试</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-action="edit" data-profile-id="${escapeHtml(profile.id)}">编辑</button>
+            ${
+              !isDefault
+                ? `<button type="button" class="btn btn-ghost btn-sm" data-action="default" data-profile-id="${escapeHtml(profile.id)}">设为默认</button>`
+                : ""
+            }
+            <button type="button" class="btn btn-ghost btn-sm" data-action="delete" data-profile-id="${escapeHtml(profile.id)}">删除</button>
+          </div>
+        </div>
+        <div class="api-ai-profile-meta">
+          <span>${escapeHtml(profile.providerLabel || profile.provider || "—")}</span>
+          <span>${escapeHtml(profile.model || "—")}</span>
+          <span>${profile.hasApiKey ? escapeHtml(profile.maskedKey) : "未配置 Key"}</span>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+function showAiProfileModalMessage(msg, type) {
+  const el = $("#aiProfileModalMessage");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = msg ? `message ${type}` : "message";
+}
+
+async function openAiProfileModal(profileId = null) {
+  const profile = profileId ? aiProfilesCache.find((item) => item.id === profileId) : null;
+  const isEdit = Boolean(profile);
+  const providers = await resolveAiProviders();
+
+  if ($("#aiProfileModalTitle")) {
+    $("#aiProfileModalTitle").textContent = isEdit ? "编辑 AI API" : "添加 AI API";
+  }
+  if ($("#aiProfileEditId")) $("#aiProfileEditId").value = profile?.id || "";
+  if ($("#aiProfileNameInput")) {
+    $("#aiProfileNameInput").value = profile?.name || "";
+  }
+  if ($("#aiProfileApiKeyInput")) {
+    $("#aiProfileApiKeyInput").value = "";
+    $("#aiProfileApiKeyInput").required = !isEdit;
+  }
+  if ($("#aiProfileKeyRequired")) $("#aiProfileKeyRequired").style.display = isEdit ? "none" : "";
+  if ($("#aiProfileKeyHint")) $("#aiProfileKeyHint").classList.toggle("hidden", !isEdit);
+  if ($("#aiProfileEnabledInput")) $("#aiProfileEnabledInput").checked = profile ? profile.enabled !== false : true;
+  if ($("#aiProfileDefaultInput")) {
+    $("#aiProfileDefaultInput").checked = profile
+      ? profile.id === defaultAiProfileIdCache
+      : !aiProfilesCache.length;
+  }
+
+  renderAiProviderOptions(providers, profile?.provider || "zhipu", $("#aiProfileProviderSelect"));
+  const provider = getAiProviderFromCache(profile?.provider || "zhipu");
+  if (provider) {
+    renderAiModelOptions(provider, profile?.model || provider.defaultModel, $("#aiProfileModelSelect"));
+    updateAiProviderFields(provider, "profile");
+  }
+  if ($("#aiProfileProviderSelect")) $("#aiProfileProviderSelect").value = profile?.provider || "zhipu";
+  if ($("#aiProfileBaseUrlInput")) $("#aiProfileBaseUrlInput").value = profile?.baseUrl || "";
+  if (profile?.provider === "custom") {
+    if ($("#aiProfileCustomModelInput")) $("#aiProfileCustomModelInput").value = profile.model || "";
+  } else if ($("#aiProfileModelSelect")) {
+    $("#aiProfileModelSelect").value = profile?.model || provider?.defaultModel || "";
+  }
+
+  showAiProfileModalMessage("", "");
+  openAppModal("aiProfileModal");
+}
+
+function collectAiProfileFromModal() {
+  const id = $("#aiProfileEditId")?.value.trim() || generateAiProfileId();
+  const existing = aiProfilesCache.find((item) => item.id === id);
+  const providerId = $("#aiProfileProviderSelect")?.value || "zhipu";
+  const provider = getAiProviderFromCache(providerId);
+  const name = $("#aiProfileNameInput")?.value.trim() || provider?.label || "AI API";
+  return {
+    id,
+    name,
+    enabled: $("#aiProfileEnabledInput")?.checked !== false,
+    provider: providerId,
+    baseUrl: $("#aiProfileBaseUrlInput")?.value.trim() || "",
+    apiKey: $("#aiProfileApiKeyInput")?.value.trim() || "",
+    model: getAiProfileModelFromUI(),
+    createdAt: existing?.createdAt || Date.now(),
+  };
+}
+
+async function saveAiProfilesToServer(profiles, defaultAiProfileId, { silent = false, messageEl = null } = {}) {
+  const showMsg = (msg, type) => {
+    if (messageEl === "modal") showAiProfileModalMessage(msg, type);
+    else if (messageEl === "api") showApiAiManageMessage(msg, type);
+    else if (!silent) showAiMessage(msg, type);
+  };
+
+  if (!silent) showMsg("正在保存...", "info");
+  try {
+    const res = await fetch("/api/ai/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aiProfiles: profiles, defaultAiProfileId }),
+    });
+    const raw = await res.json();
+    if (!res.ok) {
+      showMsg(raw.error || "保存失败", "err");
+      return null;
+    }
+    const data = normalizeAiConfigResponse(raw);
+    aiProfilesCache = data.aiProfiles || [];
+    defaultAiProfileIdCache = data.defaultAiProfileId || null;
+    renderAiProfilesList(aiProfilesCache, defaultAiProfileIdCache);
+    updateApiAiStatusCard(data);
+    if (activeView === "ai") await applyAiConfigToUI(data);
+    if (!silent) showMsg("AI 配置已保存", "ok");
+    return data;
+  } catch {
+    showMsg("无法连接本地服务", "err");
+    return null;
+  }
+}
+
+async function saveAiProfileFromModal(event) {
+  event?.preventDefault();
+  const profile = collectAiProfileFromModal();
+  const isEdit = Boolean($("#aiProfileEditId")?.value);
+  if (!profile.name) {
+    showAiProfileModalMessage("请填写名称", "err");
+    return;
+  }
+  if (!isEdit && !profile.apiKey) {
+    showAiProfileModalMessage("请填写 API Key", "err");
+    return;
+  }
+
+  const profiles = [...aiProfilesCache];
+  const index = profiles.findIndex((item) => item.id === profile.id);
+  if (index >= 0) {
+    if (!profile.apiKey) profile.apiKey = profiles[index].apiKey || "";
+    profiles[index] = { ...profiles[index], ...profile };
+  } else {
+    profiles.push(profile);
+  }
+
+  let defaultId = defaultAiProfileIdCache;
+  if ($("#aiProfileDefaultInput")?.checked) defaultId = profile.id;
+  else if (!defaultId && profiles.length === 1) defaultId = profile.id;
+
+  const saved = await saveAiProfilesToServer(profiles, defaultId, { messageEl: "modal" });
+  if (saved) {
+    $("#aiProfileModal")?.close();
+  }
+}
+
+async function testAiProfileFromModal() {
+  const profile = collectAiProfileFromModal();
+  const isEdit = Boolean($("#aiProfileEditId")?.value);
+  if (!profile.apiKey && !isEdit) {
+    showAiProfileModalMessage("请先填写 API Key", "err");
+    return;
+  }
+  showAiProfileModalMessage("正在测试 AI 连接...", "info");
+  try {
+    const res = await fetch("/api/ai/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        aiProfileId: isEdit && !profile.apiKey ? profile.id : undefined,
+        apiKey: profile.apiKey || undefined,
+        provider: profile.provider,
+        baseUrl: profile.baseUrl || undefined,
+        model: profile.model,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showAiProfileModalMessage(data.error || "测试失败", "err");
+      return;
+    }
+    showAiProfileModalMessage(`${data.message}：${data.preview || ""}`, "ok");
+  } catch {
+    showAiProfileModalMessage("无法连接本地服务", "err");
+  }
+}
+
+async function testAiProfileById(profileId) {
+  const profile = aiProfilesCache.find((item) => item.id === profileId);
+  if (!profile?.hasApiKey) {
+    showApiAiManageMessage("该 AI 尚未配置 API Key", "err");
+    return;
+  }
+  showApiAiManageMessage("正在测试 AI 连接...", "info");
+  try {
+    const res = await fetch("/api/ai/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aiProfileId: profileId }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showApiAiManageMessage(data.error || "测试失败", "err");
+      return;
+    }
+    showApiAiManageMessage(`${profile.name}：${data.message}`, "ok");
+    const statusEl = $("#apiAiStatusText");
+    if (statusEl) {
+      statusEl.textContent = "连接成功";
+      statusEl.style.color = "var(--success)";
+    }
+  } catch {
+    showApiAiManageMessage("无法连接本地服务", "err");
+  }
+}
+
+async function deleteAiProfile(profileId) {
+  const profile = aiProfilesCache.find((item) => item.id === profileId);
+  if (!profile) return;
+  if (!confirm(`确定删除 AI「${profile.name}」？托管账号若绑定了此 AI 将回退为默认 AI。`)) return;
+
+  const profiles = aiProfilesCache.filter((item) => item.id !== profileId);
+  let defaultId = defaultAiProfileIdCache;
+  if (defaultId === profileId) {
+    defaultId = profiles.find((item) => item.enabled && item.hasApiKey)?.id || profiles[0]?.id || null;
+  }
+  await saveAiProfilesToServer(profiles, defaultId, { messageEl: "api" });
+}
+
+async function setDefaultAiProfile(profileId) {
+  if (!aiProfilesCache.some((item) => item.id === profileId)) return;
+  await saveAiProfilesToServer(aiProfilesCache, profileId, { messageEl: "api" });
+}
+
+function onApiAiProfilesListClick(event) {
+  const button = event.target.closest("[data-action]");
+  if (!button) return;
+  const profileId = button.dataset.profileId;
+  if (!profileId) return;
+  const action = button.dataset.action;
+  if (action === "edit") openAiProfileModal(profileId);
+  else if (action === "test") testAiProfileById(profileId);
+  else if (action === "delete") deleteAiProfile(profileId);
+  else if (action === "default") setDefaultAiProfile(profileId);
+}
+
+function updateApiAiStatusCard(data) {
+  if (!data) return;
+  const statusEl = $("#apiAiStatusText");
+  const profiles = data.aiProfiles || [];
+  const configuredCount = profiles.filter((item) => item.hasApiKey).length;
+  const enabledCount = data.enabledAiProfileCount ?? profiles.filter((item) => item.enabled && item.hasApiKey).length;
+  const defaultProfile = profiles.find((item) => item.id === data.defaultAiProfileId);
+
+  if ($("#apiAiProfileCount")) $("#apiAiProfileCount").textContent = `${configuredCount} 个`;
+  if ($("#apiAiEnabledCount")) $("#apiAiEnabledCount").textContent = `${enabledCount} 个`;
+  if ($("#apiAiDefaultName")) {
+    $("#apiAiDefaultName").textContent = defaultProfile?.name || (configuredCount ? "未设置" : "—");
+  }
+  if ($("#apiAiHostingText")) {
+    const hostingEl = $("#apiAiHostingText");
+    hostingEl.textContent = data.enabled ? "已开启" : "未开启";
+    hostingEl.style.color = data.enabled ? "var(--success)" : "var(--text-muted)";
+  }
+  if ($("#apiAiHostedCount")) {
+    const enabled = data.enabledHostedCount ?? (data.hostedAccounts || []).filter((item) => item.enabled).length;
+    $("#apiAiHostedCount").textContent = `${enabled} 个`;
+  }
+  if (statusEl) {
+    if (data.lastError && data.hasApiKey) {
+      statusEl.textContent = "最近失败";
+      statusEl.style.color = "var(--error)";
+    } else if (data.hasApiKey) {
+      statusEl.textContent = data.lastSuccessAt ? "已配置" : "待测试";
+      statusEl.style.color = data.lastSuccessAt ? "var(--success)" : "var(--accent)";
+    } else {
+      statusEl.textContent = "未配置";
+      statusEl.style.color = "var(--text-muted)";
+    }
+  }
+}
+
+async function refreshApiAiManagePanel() {
+  try {
+    const res = await fetch("/api/ai/config");
+    const raw = await res.json();
+    const data = normalizeAiConfigResponse(raw);
+    aiProfilesCache = data.aiProfiles || [];
+    defaultAiProfileIdCache = data.defaultAiProfileId || null;
+    updateApiAiStatusCard(data);
+    renderAiProfilesList(aiProfilesCache, defaultAiProfileIdCache);
+  } catch {
+    updateApiAiStatusCard(null);
+    renderAiProfilesList([], null);
+  }
+}
+
+function showApiAiManageMessage(msg, type) {
+  const el = $("#apiAiManageMessage");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function onAiProviderChange() {
+  const provider = getAiProviderFromCache($("#aiProviderSelect")?.value);
+  if (!provider) return;
+  renderAiModelOptions(provider, provider.defaultModel);
+  updateAiProviderFields(provider);
+}
+
+function getSelectedAiModelFromUI() {
+  const providerId = $("#aiProviderSelect")?.value || "zhipu";
+  if (providerId === "custom") {
+    return $("#aiCustomModelInput")?.value.trim() || "";
+  }
+  return $("#aiModelSelect")?.value || "";
+}
+
+async function applyAiConfigToUI(data) {
+  if (!data) return;
+  data = normalizeAiConfigResponse(data);
+  aiProfilesCache = data.aiProfiles || [];
+  defaultAiProfileIdCache = data.defaultAiProfileId || null;
+  const providers = await resolveAiProviders(data.providers);
+  renderAiProviderOptions(providers, data.provider || "zhipu");
+  const provider = getAiProviderFromCache(data.provider || "zhipu");
+  if (provider) {
+    renderAiModelOptions(provider, data.model || provider.defaultModel);
+    updateAiProviderFields(provider);
+  }
+  if ($("#aiProviderSelect")) $("#aiProviderSelect").value = data.provider || "zhipu";
+  if ($("#aiBaseUrlInput")) $("#aiBaseUrlInput").value = data.baseUrl || "";
+  if (data.provider === "custom") {
+    if ($("#aiCustomModelInput")) $("#aiCustomModelInput").value = data.model || "";
+  } else if ($("#aiModelSelect")) {
+    $("#aiModelSelect").value = data.model || provider?.defaultModel || "glm-4-flash";
+  }
+
+  $("#aiEnabled").checked = Boolean(data.enabled);
+  $("#aiTopicInput").value = data.topic || "";
+  $("#aiTopicsInput").value = (data.topics || []).join("\n");
+  $("#aiIntervalInput").value = data.intervalMinutes || 60;
+  $("#aiPostsPerRunInput").value = data.postsPerRun || 1;
+  $("#aiMaxPerDayInput").value = data.maxPostsPerDay || 10;
+  $("#aiAutoPublish").checked = data.autoPublish !== false;
+  $("#aiUseNews").checked = data.useNews !== false;
+
+  aiUiOptions = {
+    contentStyleOptions: data.contentStyleOptions?.length ? data.contentStyleOptions : DEFAULT_CONTENT_STYLE_OPTIONS,
+    marketSentimentOptions: data.marketSentimentOptions?.length ? data.marketSentimentOptions : DEFAULT_SENTIMENT_OPTIONS,
+    availableTokens: data.availableTokens?.length ? data.availableTokens : DEFAULT_AVAILABLE_TOKENS,
+  };
+  renderHostedAccountsList(data);
+  renderAiStatus(data);
+}
+
+function formatHostedAccountSummary(host) {
+  const aiName = getAiProfileName(host.aiProfileId);
+  const tokens = host.selectedTokens?.length
+    ? host.selectedTokens.slice(0, 3).map((s) => `$${s}`).join("、")
+    : "自动轮换";
+  const sentiment =
+    host.marketSentiment === "bullish" ? "看多" : host.marketSentiment === "bearish" ? "看空" : "自动";
+  const styles = (host.contentStyles || [])
+    .map((id) => aiUiOptions.contentStyleOptions.find((item) => item.id === id)?.label || id)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("、") || "口语化分享";
+  return `${aiName} · ${tokens} · ${sentiment} · ${styles}`;
+}
+
+function renderHostedAccountsList(data) {
+  const container = $("#aiHostedAccountsList");
+  if (!container) return;
+
+  data = normalizeAiConfigResponse(data || {});
+  const hosted = data.hostedAccounts || [];
+  if (!accountStore.accounts.length && !hosted.length) {
+    container.innerHTML = `<div class="account-empty">请先在「账号管理」中添加账号</div>`;
+    return;
+  }
+
+  if (!hosted.length) {
+    container.innerHTML = `<div class="account-empty">暂无账号，请先在「账号管理」中添加</div>`;
+    return;
+  }
+
+  container.innerHTML = hosted
+    .map((host) => {
+      const id = host.accountId;
+      const expanded = aiHostedExpanded.has(id);
+      return `
+      <div class="ai-hosted-account-card ${host.enabled ? "is-enabled" : ""}" data-account-id="${id}">
+        <div class="ai-hosted-account-head">
+          <label class="select-all-label">
+            <input type="checkbox" class="ai-host-enabled" data-account-id="${id}" ${host.enabled ? "checked" : ""} />
+            <strong>${escapeHtml(host.accountName || getAccountName(id))}</strong>
+            ${host.isDefault ? '<span class="badge badge-green account-default-badge">默认</span>' : ""}
+          </label>
+          <span class="ai-hosted-account-summary">${escapeHtml(formatHostedAccountSummary(host))}</span>
+          <button type="button" class="btn btn-ghost btn-sm ai-host-toggle-config" data-account-id="${id}">
+            ${expanded ? "收起" : "配置"}
+          </button>
+        </div>
+        <div class="ai-hosted-account-body ${expanded ? "is-open" : ""}" id="aiHostBody-${id}">
+          <div class="ai-hosted-config-block ai-host-profile-field">
+            <span class="ai-hosted-config-label">使用 AI</span>
+            <p class="hint">不选则使用默认 AI；可在「API 管理」中添加多个 AI</p>
+            <select class="ai-host-profile-select account-select" data-account-id="${id}">
+              ${buildAiProfileSelectOptions(host.aiProfileId)}
+            </select>
+          </div>
+          <div class="ai-hosted-config-block">
+            <span class="ai-hosted-config-label">目标代币</span>
+            <p class="hint">不选则根据新闻自动轮换主流币</p>
+            <div class="token-picker ai-host-token-picker" data-account-id="${id}"></div>
+            <div class="token-custom-add">
+              <input type="text" class="ai-host-custom-token-input" data-account-id="${id}" placeholder="自定义代币，如 PEPE" maxlength="10" autocomplete="off" />
+              <button type="button" class="btn btn-secondary btn-sm ai-host-add-token" data-account-id="${id}">添加</button>
+            </div>
+          </div>
+          <div class="ai-hosted-config-block">
+            <span class="ai-hosted-config-label">观点倾向</span>
+            <div class="sentiment-picker ai-host-sentiment-picker" data-account-id="${id}"></div>
+          </div>
+          <div class="ai-hosted-config-block">
+            <span class="ai-hosted-config-label">文案风格</span>
+            <div class="content-style-grid ai-host-content-styles" data-account-id="${id}"></div>
+          </div>
+        </div>
+      </div>`;
+    })
+    .join("");
+
+  hosted.forEach((host) => {
+    const id = host.accountId;
+    aiHostedCustomTokens[id] = [...(host.customTokens || [])];
+    const profileSelect = container.querySelector(`.ai-host-profile-select[data-account-id="${id}"]`);
+    profileSelect?.addEventListener("change", () => updateHostedAccountSummary(id));
+    renderTokenPickerIn(
+      container.querySelector(`.ai-host-token-picker[data-account-id="${id}"]`),
+      aiUiOptions.availableTokens,
+      host.selectedTokens || [],
+      aiHostedCustomTokens[id],
+      { onUpdate: () => updateHostedAccountSummary(id) },
+    );
+    renderSentimentPickerIn(
+      container.querySelector(`.ai-host-sentiment-picker[data-account-id="${id}"]`),
+      aiUiOptions.marketSentimentOptions,
+      host.marketSentiment || "auto",
+      id,
+    );
+    renderContentStyleOptionsIn(
+      container.querySelector(`.ai-host-content-styles[data-account-id="${id}"]`),
+      aiUiOptions.contentStyleOptions,
+      host.contentStyles || ["casual"],
+      id,
+    );
+  });
+
+  container.querySelectorAll(".ai-host-enabled").forEach((input) => {
+    input.addEventListener("change", () => {
+      const card = input.closest(".ai-hosted-account-card");
+      card?.classList.toggle("is-enabled", input.checked);
+    });
+  });
+
+  container.querySelectorAll(".ai-host-toggle-config").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.accountId;
+      const body = document.getElementById(`aiHostBody-${id}`);
+      if (!body) return;
+      const open = !body.classList.contains("is-open");
+      body.classList.toggle("is-open", open);
+      btn.textContent = open ? "收起" : "配置";
+      if (open) aiHostedExpanded.add(id);
+      else aiHostedExpanded.delete(id);
+    });
+  });
+
+  container.querySelectorAll(".ai-host-add-token").forEach((btn) => {
+    btn.addEventListener("click", () => addHostedCustomToken(btn.dataset.accountId));
+  });
+
+  container.querySelectorAll(".ai-host-custom-token-input").forEach((input) => {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addHostedCustomToken(input.dataset.accountId);
+      }
+    });
+  });
+}
+
+function updateHostedAccountSummary(accountId) {
+  const card = document.querySelector(`.ai-hosted-account-card[data-account-id="${accountId}"]`);
+  if (!card) return;
+  const summaryEl = card.querySelector(".ai-hosted-account-summary");
+  if (!summaryEl) return;
+  const config = collectHostedAccountFromCard(card);
+  summaryEl.textContent = formatHostedAccountSummary(config);
+}
+
+function collectHostedAccountFromCard(card) {
+  const accountId = card.dataset.accountId;
+  const tokenPicker = card.querySelector(".ai-host-token-picker");
+  const sentiment = card.querySelector(`input[name="aiMarketSentiment-${accountId}"]:checked`);
+  const contentStyles = [...card.querySelectorAll(`input[name="aiContentStyle-${accountId}"]:checked`)].map(
+    (el) => el.value,
+  );
+  return {
+    accountId,
+    enabled: card.querySelector(".ai-host-enabled")?.checked || false,
+    aiProfileId: card.querySelector(".ai-host-profile-select")?.value || null,
+    selectedTokens: collectSelectedTokensFromContainer(tokenPicker),
+    customTokens: aiHostedCustomTokens[accountId] || [],
+    marketSentiment: sentiment?.value || "auto",
+    contentStyles: contentStyles.length ? contentStyles : ["casual"],
+  };
+}
+
+function collectHostedAccountsFromUI() {
+  const fromCards = [...$$(".ai-hosted-account-card")].map((card) => collectHostedAccountFromCard(card));
+  if (fromCards.length) return fromCards;
+  return normalizeHostedAccountsFromConfig({});
+}
+
+function addHostedCustomToken(accountId) {
+  const input = document.querySelector(`.ai-host-custom-token-input[data-account-id="${accountId}"]`);
+  const card = document.querySelector(`.ai-hosted-account-card[data-account-id="${accountId}"]`);
+  const tokenPicker = card?.querySelector(".ai-host-token-picker");
+  if (!input || !tokenPicker) return;
+
+  const symbol = parseTokenSymbol(input.value);
+  if (!symbol || symbol.length < 2) {
+    showAiMessage("请输入 2–10 位字母/数字组成的代币符号", "err");
+    return;
+  }
+
+  if (!aiHostedCustomTokens[accountId]) aiHostedCustomTokens[accountId] = [];
+  if (!aiHostedCustomTokens[accountId].includes(symbol)) aiHostedCustomTokens[accountId].push(symbol);
+
+  const selected = collectSelectedTokensFromContainer(tokenPicker);
+  if (!selected.includes(symbol)) selected.push(symbol);
+  renderTokenPickerIn(tokenPicker, aiUiOptions.availableTokens, selected, aiHostedCustomTokens[accountId], {
+    onUpdate: () => updateHostedAccountSummary(accountId),
+  });
+  input.value = "";
+  updateHostedAccountSummary(accountId);
+}
+
+function updateTokenSummary() {
+  const el = $("#aiTokenSummary");
+  if (!el) return;
+  const selected = collectSelectedTokensFromUI();
+  if (!selected.length) {
+    el.textContent = "自动轮换";
+    return;
+  }
+  const text = selected.map((symbol) => `$${symbol}`).join("、");
+  el.textContent = selected.length > 3 ? `${selected.slice(0, 3).map((s) => `$${s}`).join("、")} 等${selected.length}个` : text;
+}
+
+function collectSelectedTokensFromContainer(container) {
+  if (!container) return [];
+  return [...container.querySelectorAll(".token-chip.active")].map((el) => el.dataset.token).filter(Boolean);
+}
+
+function renderTokenPickerIn(container, presetTokens = [], selected = [], customTokens = [], { onUpdate } = {}) {
+  if (!container) return;
+  const preset = presetTokens.length ? presetTokens : DEFAULT_AVAILABLE_TOKENS;
+  const presetSet = new Set(preset);
+  const normalizedSelected = [...new Set(selected.map(parseTokenSymbol).filter(Boolean))];
+  const selectedSet = new Set(normalizedSelected);
+  const customList = [...new Set(customTokens.map(parseTokenSymbol).filter(Boolean))];
+  for (const symbol of normalizedSelected) {
+    if (!presetSet.has(symbol) && !customList.includes(symbol)) customList.push(symbol);
+  }
+
+  const presetHtml = preset
+    .map(
+      (symbol) => `
+      <button type="button" class="token-chip ${selectedSet.has(symbol) ? "active" : ""}" data-token="${symbol}">
+        $${symbol}
+      </button>`,
+    )
+    .join("");
+
+  const customHtml = customList
+    .map(
+      (symbol) => `
+      <button type="button" class="token-chip custom ${selectedSet.has(symbol) ? "active" : ""}" data-token="${symbol}" data-custom="1">
+        <span class="token-chip-label">$${symbol}</span>
+        <span class="token-chip-remove" data-action="remove-custom" data-token="${symbol}" title="删除">×</span>
+      </button>`,
+    )
+    .join("");
+
+  container.innerHTML = presetHtml + customHtml;
+  container.querySelectorAll(".token-chip").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      if (e.target.closest('[data-action="remove-custom"]')) return;
+      btn.classList.toggle("active");
+      onUpdate?.();
+    });
+  });
+  container.querySelectorAll('[data-action="remove-custom"]').forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const symbol = parseTokenSymbol(btn.dataset.token);
+      const accountId = container.closest(".ai-hosted-account-card")?.dataset.accountId;
+      if (accountId && aiHostedCustomTokens[accountId]) {
+        aiHostedCustomTokens[accountId] = aiHostedCustomTokens[accountId].filter((item) => item !== symbol);
+      }
+      btn.closest(".token-chip")?.remove();
+      onUpdate?.();
+    });
+  });
+}
+
+function renderTokenPicker(presetTokens = [], selected = [], customTokens = []) {
+  const container = $("#aiTokenPicker");
+  if (!container) return;
+  aiCustomTokens = [...new Set(customTokens.map(parseTokenSymbol).filter(Boolean))];
+  renderTokenPickerIn(container, presetTokens, selected, aiCustomTokens, { onUpdate: updateTokenSummary });
+  updateTokenSummary();
+}
+
+function initAiCollapseSections() {
+  $$(".ai-collapse-trigger").forEach((btn) => {
+    if (btn.dataset.bound) return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", () => {
+      const body = document.getElementById(btn.dataset.target);
+      if (!body) return;
+      const expanded = btn.getAttribute("aria-expanded") === "true";
+      btn.setAttribute("aria-expanded", expanded ? "false" : "true");
+      body.classList.toggle("is-open", !expanded);
+    });
+  });
+}
+
+function updateSentimentSummary() {
+  const el = $("#aiSentimentSummary");
+  if (!el) return;
+  const value = collectMarketSentimentFromUI();
+  const option = DEFAULT_SENTIMENT_OPTIONS.find((item) => item.id === value);
+  el.textContent = option?.label || "自动（跟随行情）";
+}
+
+function updateContentStyleSummary() {
+  const el = $("#aiContentStyleSummary");
+  if (!el) return;
+  const labels = [...$$('input[name="aiContentStyle"]:checked')]
+    .map((input) => input.closest(".content-style-option")?.querySelector("strong")?.textContent?.trim())
+    .filter(Boolean);
+  el.textContent = labels.length ? labels.join("、") : "口语化分享";
+}
+
+function parseTokenSymbol(raw = "") {
+  return String(raw).replace(/^\$/, "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function removeCustomToken(symbol) {
+  const normalized = parseTokenSymbol(symbol);
+  if (!normalized) return;
+  aiCustomTokens = aiCustomTokens.filter((item) => item !== normalized);
+  const selected = collectSelectedTokensFromUI().filter((item) => item !== normalized);
+  renderTokenPicker(DEFAULT_AVAILABLE_TOKENS, selected, aiCustomTokens);
+  updateTokenSummary();
+}
+
+function addCustomTokenFromInput() {
+  const input = $("#aiCustomTokenInput");
+  if (!input) return;
+  const symbol = parseTokenSymbol(input.value);
+  if (!symbol || symbol.length < 2) {
+    showAiMessage("请输入 2–10 位字母/数字组成的代币符号，如 PEPE", "err");
+    return;
+  }
+
+  const preset = DEFAULT_AVAILABLE_TOKENS;
+  const selected = collectSelectedTokensFromUI();
+  if (!aiCustomTokens.includes(symbol)) aiCustomTokens.push(symbol);
+  if (!selected.includes(symbol)) selected.push(symbol);
+  renderTokenPicker(preset, selected, aiCustomTokens);
+
+  input.value = "";
+  updateTokenSummary();
+  showAiMessage(`已添加自定义代币 $${symbol}，记得点击「保存 AI 配置」`, "ok");
+}
+
+function collectSelectedTokensFromUI() {
+  return [...$$("#aiTokenPicker .token-chip.active")].map((el) => el.dataset.token).filter(Boolean);
+}
+
+function renderSentimentPickerIn(container, options = [], selected = "auto", accountId = "") {
+  if (!container) return;
+  const list = options.length ? options : DEFAULT_SENTIMENT_OPTIONS;
+  const name = accountId ? `aiMarketSentiment-${accountId}` : "aiMarketSentiment";
+  container.innerHTML = list
+    .map(
+      (opt) => `
+      <label class="sentiment-option ${opt.id === "bullish" ? "bullish" : opt.id === "bearish" ? "bearish" : ""}">
+        <input type="radio" name="${name}" value="${opt.id}" ${opt.id === selected ? "checked" : ""} />
+        <span>${opt.label}</span>
+      </label>`,
+    )
+    .join("");
+  container.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.addEventListener("change", () => updateHostedAccountSummary(accountId));
+  });
+}
+
+function renderSentimentPicker(options = [], selected = "auto") {
+  renderSentimentPickerIn($("#aiSentimentPicker"), options, selected);
+  updateSentimentSummary();
+}
+
+function renderContentStyleOptionsIn(container, options, selected = ["casual"], accountId = "") {
+  if (!container) return;
+  const list = options?.length ? options : DEFAULT_CONTENT_STYLE_OPTIONS;
+  const selectedSet = new Set(selected);
+  const name = accountId ? `aiContentStyle-${accountId}` : "aiContentStyle";
+  container.innerHTML = list
+    .map(
+      (opt) => `
+      <label class="content-style-option">
+        <input type="checkbox" name="${name}" value="${opt.id}" ${selectedSet.has(opt.id) ? "checked" : ""} />
+        <span>
+          <strong>${opt.label}</strong>
+          <small>${opt.hint}</small>
+        </span>
+      </label>`,
+    )
+    .join("");
+  container.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.addEventListener("change", () => updateHostedAccountSummary(accountId));
+  });
+}
+
+function renderContentStyleOptions(options, selected = ["casual"]) {
+  renderContentStyleOptionsIn($("#aiContentStyles"), options, selected);
+  updateContentStyleSummary();
+}
+
+function collectMarketSentimentFromUI() {
+  const checked = document.querySelector('input[name="aiMarketSentiment"]:checked');
+  return checked?.value || "auto";
+}
+
+function collectContentStylesFromUI() {
+  return [...$$('input[name="aiContentStyle"]:checked')].map((el) => el.value);
+}
+
+function updateAiHostingButtons(data) {
+  const btn = $("#btnAiRunNow");
+  const cancelBtn = $("#btnAiCancelHosting");
+  if (!btn || aiRunning) return;
+  if (data?.enabled) {
+    btn.textContent = "立即发一条（可选）";
+    btn.title = "后台已自动托管，刷新或重启后仍会按计划发帖。此按钮仅用于立即额外发一条";
+    btn.classList.remove("btn-accent");
+    btn.classList.add("btn-secondary");
+    if (cancelBtn) cancelBtn.classList.remove("hidden");
+  } else {
+    btn.textContent = "开启并立即托管";
+    btn.title = "开启自动托管并立即发布一条，之后将按间隔自动发帖";
+    btn.classList.remove("btn-secondary");
+    btn.classList.add("btn-accent");
+    if (cancelBtn) cancelBtn.classList.add("hidden");
+  }
+}
+
+async function stopAiHosting() {
+  const current = await fetch("/api/ai/config").then((r) => r.json()).catch(() => ({}));
+  if (!current.enabled) {
+    showAiMessage("当前未开启托管", "info");
+    return;
+  }
+  const saved = await saveAiConfig({ enabled: false }, { silent: true });
+  if (!saved) return;
+  showAiMessage("已取消 AI 自动托管，后台将不再自动发帖。", "ok");
+}
+
+function renderAiStatus(data) {
+  const el = $("#aiStatusText");
+  const hint = $("#aiHostingHint");
+  if (!el || !data) return;
+
+  const parts = [
+    data.providerLabel ? `服务商: ${data.providerLabel}` : "",
+    data.model ? `模型: ${data.model}` : "",
+    data.hasApiKey ? `AI Key: ${data.maskedKey}` : "AI Key: 未配置",
+    data.enabled ? "托管: 已开启（后台持久运行）" : "托管: 未开启",
+    `今日已发 ${data.todayPublished || 0}/${data.maxPostsPerDay || 10}`,
+    `上次运行: ${formatTime(data.lastRunAt)}`,
+  ];
+  const enabledHosted = (data.hostedAccounts || []).filter((item) => item.enabled);
+  if (enabledHosted.length) {
+    parts.push(`托管账号: ${enabledHosted.length} 个（${enabledHosted.map((item) => item.accountName).join("、")}）`);
+  } else {
+    parts.push("托管账号: 未启用");
+  }
+  if (data.enabled && data.nextRunAt) {
+    const nextLabel = data.nextRunAt <= Date.now() ? "即将自动发帖" : formatTime(data.nextRunAt);
+    parts.push(`下次发帖: ${nextLabel}`);
+  }
+  if (data.lastError) parts.push(`最近错误: ${data.lastError}`);
+  el.textContent = parts.filter(Boolean).join(" · ");
+  el.className = data.lastError ? "message err" : "message info";
+
+  if (hint) {
+    if (data.enabled && data.hasApiKey) {
+      hint.textContent =
+        "自动托管已保存到本地配置。关闭或刷新页面、重启软件后无需再次点击，后台会按间隔自动发帖。";
+      hint.classList.remove("hidden");
+      hint.className = "message ok";
+    } else {
+      hint.textContent = "";
+      hint.classList.add("hidden");
+    }
+  }
+  updateAiHostingButtons(data);
+}
+
+async function loadAiConfig() {
+  try {
+    const res = await fetch("/api/ai/config");
+    const raw = await res.json();
+    await applyAiConfigToUI(normalizeAiConfigResponse(raw));
+  } catch {
+    showAiMessage("无法加载 AI 配置", "err");
+    await loadAiProvidersFallback();
+    await applyAiConfigToUI({
+      provider: "zhipu",
+      model: "glm-4-flash",
+      providers: aiProvidersCache,
+      hostedAccounts: accountStore.accounts.map((acc) => ({
+        accountId: acc.id,
+        accountName: acc.name,
+        isDefault: acc.isDefault,
+        enabled: acc.isDefault,
+        selectedTokens: [],
+        customTokens: [],
+        marketSentiment: "auto",
+        contentStyles: ["casual"],
+      })),
+    });
+  }
+}
+
+function collectAiConfigFromUI() {
+  const hostedAccounts = collectHostedAccountsFromUI();
+  const firstEnabled = hostedAccounts.find((item) => item.enabled);
+  return {
+    enabled: $("#aiEnabled").checked,
+    provider: $("#aiProviderSelect")?.value || "zhipu",
+    baseUrl: $("#aiBaseUrlInput")?.value.trim() || "",
+    apiKey: $("#aiApiKeyInput").value.trim(),
+    model: getSelectedAiModelFromUI(),
+    topic: $("#aiTopicInput").value.trim(),
+    topics: $("#aiTopicsInput").value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    hostedAccounts,
+    accountId: firstEnabled?.accountId || getDefaultAccountId(),
+    intervalMinutes: parseInt($("#aiIntervalInput").value, 10) || 60,
+    postsPerRun: parseInt($("#aiPostsPerRunInput").value, 10) || 1,
+    maxPostsPerDay: parseInt($("#aiMaxPerDayInput").value, 10) || 10,
+    autoPublish: $("#aiAutoPublish").checked,
+    useNews: $("#aiUseNews").checked,
+  };
+}
+
+async function saveAiConfig(overrides = {}, { silent = false } = {}) {
+  const payload = { ...collectAiConfigFromUI(), ...overrides };
+  if (payload.enabled && !payload.hostedAccounts?.some((item) => item.enabled)) {
+    if (!silent) showAiMessage("请至少勾选一个托管账号", "err");
+    return null;
+  }
+  if (payload.enabled && !aiProfilesCache.some((item) => item.enabled && item.hasApiKey)) {
+    if (!silent) showAiMessage("请先在「API 管理」中配置至少一个启用的 AI", "err");
+    return null;
+  }
+  if (!payload.apiKey) delete payload.apiKey;
+  if (!silent) showAiMessage("正在保存...", "info");
+  try {
+    const res = await fetch("/api/ai/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const raw = await res.json();
+    if (!res.ok) {
+      if (!silent) showAiMessage(raw.error || "保存失败", "err");
+      return null;
+    }
+    const data = normalizeAiConfigResponse(raw);
+    aiProfilesCache = data.aiProfiles || [];
+    defaultAiProfileIdCache = data.defaultAiProfileId || null;
+    $("#aiApiKeyInput").value = "";
+    await applyAiConfigToUI(data);
+    if (activeView === "api") refreshApiAiManagePanel();
+    if (!silent) {
+      showAiMessage(
+        data.enabled
+          ? "AI 配置已保存。自动托管已开启，刷新或重启后无需再点，后台会按间隔自动发帖。"
+          : "AI 配置已保存",
+        "ok",
+      );
+    }
+    return data;
+  } catch {
+    if (!silent) showAiMessage("无法连接本地服务", "err");
+    return null;
+  }
+}
+
+async function testAiApi() {
+  const config = collectAiConfigFromUI();
+  const apiKey = config.apiKey;
+  showAiMessage("正在测试 AI 连接...", "info");
+  try {
+    const res = await fetch("/api/ai/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: apiKey || undefined,
+        provider: config.provider,
+        baseUrl: config.baseUrl || undefined,
+        model: config.model,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showAiMessage(data.error || "测试失败", "err");
+      return;
+    }
+    showAiMessage(`${data.message}：${data.preview || ""}`, "ok");
+  } catch {
+    showAiMessage("无法连接本地服务", "err");
+  }
+}
+
+function addDraftsFromAiPosts(generatedPosts, { accountId, accountName } = {}) {
+  generatedPosts.forEach((item) => {
+    const resolvedAccountId = item.accountId || accountId || getDefaultAccountId();
+    const resolvedAccountName = getAccountName(resolvedAccountId) || accountName || "默认账号";
+    posts.push({
+      id: generateId(),
+      text: item.text,
+      title: "",
+      imagePaths: [],
+      accountId: resolvedAccountId,
+      accountName: resolvedAccountName,
+      selected: true,
+      publishState: "draft",
+      result: null,
+      error: null,
+      publishedAt: null,
+      createdAt: Date.now(),
+    });
+  });
+  saveDrafts();
+  renderPosts();
+  updatePublishBtn();
+}
+
+async function aiRun({ publish = false } = {}) {
+  if (aiRunning) return;
+  const config = collectAiConfigFromUI();
+  const current = await fetch("/api/ai/config").then((r) => r.json()).catch(() => ({}));
+  const hasConfiguredAi =
+    current.hasApiKey ||
+    (current.aiProfiles || []).some((item) => item.enabled && item.hasApiKey) ||
+    aiProfilesCache.some((item) => item.enabled && item.hasApiKey);
+  if (!config.apiKey && !hasConfiguredAi) {
+    showAiMessage("请先在「API 管理」中配置至少一个 AI", "err");
+    return;
+  }
+
+  const enabledCount = config.hostedAccounts.filter((item) => item.enabled).length;
+  if (!enabledCount) {
+    showAiMessage("请至少勾选一个托管账号", "err");
+    return;
+  }
+
+  const savedConfig = await saveAiConfig(
+    publish ? { enabled: true, autoPublish: true } : {},
+    { silent: true },
+  );
+  if (!savedConfig) return;
+
+  const actionText = publish ? "生成并发布" : "生成草稿";
+  const btn = publish ? $("#btnAiRunNow") : $("#btnAiGenerateDraft");
+  aiRunning = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.prevText = btn.textContent;
+    btn.textContent = "运行中...";
+  }
+  showAiMessage(`正在${actionText}...`, "info");
+  try {
+    const res = await fetch("/api/ai/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        publish,
+        count: publish ? 1 : config.postsPerRun,
+        manual: true,
+        allAccounts: !publish,
+        provider: config.provider,
+        baseUrl: config.baseUrl || undefined,
+        model: config.model,
+        topic: config.topic,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showAiMessage(data.error || `${actionText}失败`, "err");
+      await refreshAiRuntimeStatus();
+      return;
+    }
+
+    if (!publish && data.generated?.length) {
+      addDraftsFromAiPosts(data.generated, {
+        accountId: config.accountId,
+        accountName: getAccountName(config.accountId),
+      });
+    }
+
+    if (publish && data.published?.length) {
+      data.published.forEach((item) => {
+        const accountId = item.accountId || config.accountId;
+        posts.push({
+          id: generateId(),
+          text: item.text,
+          title: "",
+          imagePaths: [],
+          accountId,
+          accountName: getAccountName(accountId),
+          selected: false,
+          publishState: "published",
+          result: item.result,
+          error: null,
+          publishedAt: Date.now(),
+          createdAt: Date.now(),
+        });
+      });
+      saveDrafts();
+      renderPosts();
+      syncAllLocalPublishedToCache();
+    }
+
+    const baseMsg = data.message || `${actionText}完成`;
+    if (publish && savedConfig?.enabled) {
+      showAiMessage(
+        `${baseMsg}。自动托管已开启，后台将每 ${savedConfig.intervalMinutes} 分钟发帖，刷新或重启后无需再点。`,
+        "ok",
+      );
+    } else {
+      showAiMessage(baseMsg, "ok");
+    }
+    await refreshAiRuntimeStatus();
+  } catch {
+    showAiMessage("无法连接本地服务", "err");
+  } finally {
+    aiRunning = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.prevText || btn.textContent;
+    }
+    const latest = await fetch("/api/ai/config").then((r) => r.json()).catch(() => null);
+    if (latest) updateAiHostingButtons(latest);
+  }
+}
+
+async function aiFillPostModal() {
+  const topic = $("#aiTopicInput").value.trim() || prompt("请输入生成主题（可留空使用默认主题）", "") || undefined;
+  const config = collectAiConfigFromUI();
+  const hostConfig = config.hostedAccounts.find((item) => item.enabled) || config.hostedAccounts[0];
+  const btn = $("#btnAiFillPost");
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "生成中...";
+  try {
+    const res = await fetch("/api/ai/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        topic,
+        count: 1,
+        apiKey: config.apiKey || undefined,
+        provider: config.provider,
+        baseUrl: config.baseUrl || undefined,
+        model: config.model,
+        contentStyles: hostConfig?.contentStyles,
+        selectedTokens: hostConfig?.selectedTokens,
+        marketSentiment: hostConfig?.marketSentiment,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "AI 生成失败");
+      return;
+    }
+    const text = data.posts?.[0]?.text;
+    if (!text) {
+      alert("AI 未返回内容");
+      return;
+    }
+    $("#postText").value = text;
+    $("#charCount").textContent = text.length;
+  } catch {
+    alert("无法连接本地服务");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+function updatePublishBtn() {
+  const selected = getSelectedPosts();
+  const selectedCount = selected.length;
+  const deletableCount = selected.filter((p) => p.publishState === "draft" || p.publishState === "failed").length;
+
+  const publishBtn = $("#btnPublish");
+  publishBtn.disabled = publishing || selectedCount === 0 || !apiConfigured;
+  publishBtn.textContent = selectedCount > 0 ? `▶ 发布选中 (${selectedCount})` : "▶ 发布选中";
+
+  const deleteBtn = $("#btnDeleteSelected");
+  if (deleteBtn) {
+    deleteBtn.disabled = publishing || deletableCount === 0;
+    deleteBtn.textContent = deletableCount > 0 ? `删除选中 (${deletableCount})` : "删除选中";
+  }
+}
+
+function updateDraftStats() {
+  const draftCount = countByState("draft") + countByState("failed");
+  const publishedCount = countByState("published");
+  $("#draftStats").textContent = `${draftCount} 条待发布 · ${publishedCount} 条已发布`;
+}
+
+function updateSelectAllCheckbox() {
+  const visible = getFilteredPosts().filter((p) => p.publishState !== "publishing");
+  const allSelected = visible.length > 0 && visible.every((p) => p.selected);
+  const someSelected = visible.some((p) => p.selected);
+  const checkbox = $("#selectAllCheckbox");
+  checkbox.checked = allSelected;
+  checkbox.indeterminate = someSelected && !allSelected;
+}
+
+function stateLabel(post) {
+  switch (post.publishState) {
+    case "published":
+      return "已发布";
+    case "failed":
+      return "发布失败";
+    case "publishing":
+      return "发布中";
+    default:
+      return "草稿";
+  }
+}
+
+function stateClass(post) {
+  switch (post.publishState) {
+    case "published":
+      return "state-published";
+    case "failed":
+      return "state-failed";
+    case "publishing":
+      return "state-publishing";
+    default:
+      return "state-draft";
+  }
+}
+
+function getPostRef(post) {
+  return post.result?.id || post.result?.shareLink || null;
+}
+
+function renderCommentsButton(post) {
+  const countLabel = post.stats?.commentCount ?? 0;
+  return `<button type="button" class="stat-item stat-comments-btn" data-action="toggle-comments" data-id="${post.id}" title="点击查看评论">💬 ${countLabel}${post.commentsExpanded ? " ▾" : ""}</button>`;
+}
+
+function renderCommentsPanel(post) {
+  if (!post.commentsExpanded || !(post.stats?.commentCount > 0)) return "";
+
+  if (post.commentsLoading) {
+    return `<div class="comments-panel loading">正在加载评论...</div>`;
+  }
+
+  if (post.commentsError) {
+    return `<div class="comments-panel error"><span>${escapeHtml(post.commentsError)}</span> <button type="button" class="btn btn-ghost btn-sm" data-action="reload-comments" data-id="${post.id}">重试</button></div>`;
+  }
+
+  const list = post.commentsList || post.stats?.recentComments || [];
+  const listHtml =
+    list.length > 0
+      ? `<div class="recent-comments">${list
+          .map(
+            (c) =>
+              `<div class="comment-item"><span class="comment-author">${escapeHtml(c.author)}</span>${c.time ? `<span class="comment-time">${formatTime(c.time, true)}</span>` : ""}<span class="comment-text">${escapeHtml(c.text)}</span>${c.likeCount != null ? `<span class="comment-like">👍 ${c.likeCount}</span>` : ""}</div>`,
+          )
+          .join("")}</div>`
+      : `<div class="comment-more">${escapeHtml(post.commentsHint || "暂无评论内容")}${post.result?.shareLink ? ` · <a href="${post.result.shareLink}" target="_blank" rel="noopener">在币安查看</a>` : ""}</div>`;
+
+  return `<div class="comments-panel">${listHtml}<button type="button" class="btn btn-ghost btn-sm comments-refresh" data-action="reload-comments" data-id="${post.id}">刷新评论</button></div>`;
+}
+
+function renderStatsBlock(post) {
+  if (post.publishState !== "published" || !getPostRef(post)) return "";
+
+  if (post.statsLoading) {
+    return `<div class="post-stats loading">正在获取互动数据...</div>`;
+  }
+
+  if (post.statsError) {
+    return `<div class="post-stats error"><span>${escapeHtml(post.statsError)}</span> <button class="btn btn-ghost btn-sm" data-action="refresh-stats" data-id="${post.id}">重试</button></div>`;
+  }
+
+  if (!post.stats) {
+    return `<div class="post-stats empty"><button class="btn btn-ghost btn-sm" data-action="refresh-stats" data-id="${post.id}">获取浏览/点赞数据</button></div>`;
+  }
+
+  const s = post.stats;
+  const viewDelta =
+    s.viewDelta > 0 ? `<span class="stat-delta">+${s.viewDelta}</span>` : s.viewDelta < 0 ? `<span class="stat-delta">${s.viewDelta}</span>` : "";
+  const inlineComments =
+    !s.commentCount && s.recentComments?.length > 0
+      ? `<div class="recent-comments">${s.recentComments
+          .map(
+            (c) =>
+              `<div class="comment-item"><span class="comment-author">${escapeHtml(c.author)}</span><span class="comment-text">${escapeHtml(c.text)}</span></div>`,
+          )
+          .join("")}</div>`
+      : "";
+
+  return `
+    <div class="post-stats">
+      <div class="stats-row">
+        <span class="stat-item" title="浏览量">👁 ${s.viewCount ?? "-"}${viewDelta}</span>
+        <span class="stat-item" title="点赞数">👍 ${s.likeCount ?? "-"}</span>
+        ${s.commentCount > 0 ? renderCommentsButton(post) : `<span class="stat-item" title="评论数">💬 ${s.commentCount ?? "-"}</span>`}
+        <span class="stat-item" title="分享数">↗ ${s.shareCount ?? "-"}</span>
+        <button class="btn btn-ghost btn-sm" data-action="refresh-stats" data-id="${post.id}" ${publishing ? "disabled" : ""}>刷新</button>
+      </div>
+      ${s.fetchedAt ? `<div class="stats-time">更新于 ${formatTime(s.fetchedAt, true)}</div>` : ""}
+      ${renderCommentsPanel(post)}
+      ${inlineComments}
+    </div>`;
+}
+
+function isReviewPendingError(message) {
+  return /20012|under review|审核/i.test(message || "");
+}
+
+function formatStatsError(message) {
+  if (isReviewPendingError(message)) return "内容审核中，互动数据稍后可用";
+  return message;
+}
+
+async function refreshPostStats(postId, { silent = false, checkAlert = true } = {}) {
+  const post = posts.find((p) => p.id === postId);
+  if (!post) return false;
+  const ref = getPostRef(post);
+  if (!ref) {
+    if (!silent) alert("该帖子没有可用的链接或 ID");
+    return false;
+  }
+
+  const prevView = post.stats?.viewCount ?? null;
+  post.statsLoading = true;
+  post.statsError = null;
+  renderPosts();
+
+  try {
+    const res = await fetch("/api/post/stats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shareLink: ref,
+        accountId: post.accountId || getDefaultAccountId(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "获取失败");
+
+    const newStats = data.stats;
+    const viewDelta = prevView != null && newStats.viewCount != null ? newStats.viewCount - prevView : 0;
+    post.stats = { ...newStats, prevViewCount: prevView, viewDelta };
+    post.statsError = null;
+
+    if (checkAlert && prevView != null && viewDelta >= loadMonitorSettings().viewAlertThreshold) {
+      addViewAlert(post, prevView, newStats.viewCount, viewDelta);
+    }
+    return true;
+  } catch (err) {
+    post.statsError = formatStatsError(err.message);
+    const reviewPending = isReviewPendingError(err.message);
+    if (!silent && !reviewPending) alert(err.message);
+    return false;
+  } finally {
+    post.statsLoading = false;
+    saveDrafts();
+    renderPosts();
+  }
+}
+
+async function loadPostComments(postId, { force = false } = {}) {
+  const post = posts.find((p) => p.id === postId);
+  if (!post) return false;
+  const ref = getPostRef(post);
+  if (!ref) {
+    post.commentsError = "该帖子没有可用的链接或 ID";
+    return false;
+  }
+
+  if (!force && post.commentsList?.length) return true;
+
+  post.commentsLoading = true;
+  post.commentsError = null;
+  renderPosts();
+
+  try {
+    const res = await fetch("/api/post/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shareLink: ref, accountId: post.accountId || getDefaultAccountId() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "加载评论失败");
+
+    post.commentsList = data.comments || [];
+    post.commentsHint = data.hint || null;
+    post.commentsError = null;
+
+    if (!post.commentsList.length && data.needsLogin) {
+      post.commentsHint = data.hint || "请在设置中配置币安 Cookie 后查看评论";
+    }
+    return true;
+  } catch (err) {
+    post.commentsError = err.message;
+    return false;
+  } finally {
+    post.commentsLoading = false;
+    saveDrafts();
+    renderPosts();
+  }
+}
+
+async function toggleComments(postId) {
+  const post = posts.find((p) => p.id === postId);
+  if (!post) return;
+
+  if (post.commentsExpanded) {
+    post.commentsExpanded = false;
+    saveDrafts();
+    renderPosts();
+    return;
+  }
+
+  post.commentsExpanded = true;
+  saveDrafts();
+  renderPosts();
+  await loadPostComments(postId);
+}
+
+async function refreshAllStats({ silent = false } = {}) {
+  const published = posts.filter((p) => p.publishState === "published" && getPostRef(p));
+  if (!published.length) {
+    if (!silent) alert("没有已发布且可查询的帖子");
+    return;
+  }
+
+  $("#btnRefreshAllStats").disabled = true;
+  for (const post of published) {
+    await refreshPostStats(post.id, { silent: true, checkAlert: true });
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  $("#btnRefreshAllStats").disabled = false;
+  if (!silent) renderAlerts();
+}
+
+function postPreview(text, max = 40) {
+  const value = (text || "").replace(/\s+/g, " ").trim();
+  return value.length > max ? `${value.slice(0, max)}...` : value;
+}
+
+function addViewAlert(post, from, to, delta) {
+  const alert = {
+    id: generateId(),
+    type: "view",
+    postId: post.id,
+    preview: postPreview(post.text),
+    from,
+    to,
+    delta,
+    shareLink: post.result?.shareLink || "",
+    time: Date.now(),
+  };
+  alerts.unshift(alert);
+  alerts = alerts.slice(0, MAX_ALERTS);
+  saveAlerts();
+  renderAlerts();
+
+  const settings = loadMonitorSettings();
+  if (settings.notifyBrowser && "Notification" in window && Notification.permission === "granted") {
+    new Notification("浏览量上涨提醒", {
+      body: `「${alert.preview}」浏览 +${delta}（${from} → ${to}）`,
+    });
+  }
+}
+
+function renderAlerts() {
+  const panel = $("#alertPanel");
+  const list = $("#alertList");
+  if (!alerts.length) {
+    panel.classList.add("hidden");
+    list.innerHTML = "";
+    return;
+  }
+
+  panel.classList.remove("hidden");
+  list.innerHTML = alerts
+    .map(
+      (a) => `
+    <div class="alert-item">
+      <div>📈 <strong>浏览 +${a.delta}</strong>：${escapeHtml(a.preview)}（${a.from} → ${a.to}）
+      ${a.shareLink ? `<a href="${a.shareLink}" target="_blank" rel="noopener">查看</a>` : ""}</div>
+      <div class="alert-time">${formatTime(a.time, true)}</div>
+    </div>`,
+    )
+    .join("");
+}
+
+function clearAlerts() {
+  alerts = [];
+  saveAlerts();
+  renderAlerts();
+}
+
+function csvCell(value) {
+  const text = value == null ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function exportToExcel() {
+  if (!posts.length) return alert("没有可导出的数据");
+
+  const headers = [
+    "内容摘要",
+    "状态",
+    "发布账号",
+    "标题",
+    "发布时间",
+    "帖子链接",
+    "帖子ID",
+    "浏览量",
+    "浏览增量",
+    "点赞数",
+    "评论数",
+    "分享数",
+    "数据更新时间",
+  ];
+
+  const rows = posts.map((p) => [
+    postPreview(p.text, 120),
+    stateLabel(p),
+    p.accountName || getAccountName(p.accountId),
+    p.title || "",
+    p.publishedAt ? formatTime(p.publishedAt, true) : "",
+    p.result?.shareLink || "",
+    p.result?.id || "",
+    p.stats?.viewCount ?? "",
+    p.stats?.viewDelta ?? "",
+    p.stats?.likeCount ?? "",
+    p.stats?.commentCount ?? "",
+    p.stats?.shareCount ?? "",
+    p.stats?.fetchedAt ? formatTime(p.stats.fetchedAt, true) : "",
+  ]);
+
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  a.href = url;
+  a.download = `币安广场数据-${stamp}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function buildPostCardHtml(p, index, { selectable = true } = {}) {
+  const cardClass = p.publishState === "publishing" ? "status-publishing" : `status-${p.publishState}`;
+  const canSelect = selectable && p.publishState !== "publishing";
+  return `
+    <div class="post-card ${cardClass}" data-id="${p.id}">
+      ${
+        selectable
+          ? `<label class="post-check" title="${canSelect ? "选择发布" : "发布中"}">
+        <input type="checkbox" class="post-select" data-id="${p.id}" ${p.selected ? "checked" : ""} ${canSelect ? "" : "disabled"} />
+      </label>`
+          : ""
+      }
+      <div class="post-index">${index + 1}</div>
+      <div class="post-body">
+        ${buildPostAccountBlock(p, { editable: selectable })}
+        <div class="post-text">${escapeHtml(p.text)}</div>
+        <div class="post-meta">
+          <span class="state-badge ${stateClass(p)}">${stateLabel(p)}</span>
+          ${p.title ? `<span class="tag">文章: ${escapeHtml(p.title)}</span>` : "<span>短帖</span>"}
+          ${p.imagePaths?.length ? `<span>${p.imagePaths.length} 张图片</span>` : ""}
+          ${p.publishedAt ? `<span>发布于 ${formatTime(p.publishedAt, true)}</span>` : ""}
+          ${p.result?.shareLink ? `<a href="${p.result.shareLink}" target="_blank" rel="noopener">查看链接</a>` : ""}
+          ${p.error ? `<span class="error-text">${escapeHtml(p.error)}</span>` : ""}
+        </div>
+        ${renderStatsBlock(p)}
+      </div>
+      <div class="post-actions">
+        <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${p.id}" ${publishing ? "disabled" : ""}>编辑</button>
+        ${p.publishState === "published" && getPostRef(p) ? `<button class="btn btn-ghost btn-sm" data-action="refresh-stats" data-id="${p.id}" ${publishing ? "disabled" : ""}>数据</button>` : ""}
+        <button class="btn btn-ghost btn-sm btn-danger" data-action="delete" data-id="${p.id}" ${publishing ? "disabled" : ""}>删除</button>
+      </div>
+    </div>`;
+}
+
+function renderPostListContainer(container, visible, { selectable = true, emptyText = "暂无帖子" } = {}) {
+  if (!container) return;
+  if (!visible.length) {
+    container.innerHTML = `<div class="empty-state"><p>${emptyText}</p></div>`;
+    return;
+  }
+  container.innerHTML = visible.map((p, i) => buildPostCardHtml(p, i, { selectable })).join("");
+  container.querySelectorAll("[data-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.id;
+      if (btn.dataset.action === "edit") openPostModal(id);
+      if (btn.dataset.action === "delete") deletePost(id);
+      if (btn.dataset.action === "refresh-stats") refreshPostStats(id);
+      if (btn.dataset.action === "toggle-comments") toggleComments(id);
+      if (btn.dataset.action === "reload-comments") loadPostComments(id, { force: true });
+    });
+  });
+}
+
+function renderPosts() {
+  const draftPosts = getDraftPosts();
+  const publishedPosts = getPublishedPosts();
+  updateDraftStats();
+  updateSelectAllCheckbox();
+  updatePublishBtn();
+  updateDraftBulkAccountBar();
+
+  const draftEmpty =
+    posts.length === 0
+      ? "暂无帖子，点击「添加帖子」或「导入」开始"
+      : currentFilter === "draft"
+        ? "暂无草稿"
+        : currentFilter === "failed"
+          ? "暂无失败帖子"
+          : "暂无待发帖子";
+
+  renderPostListContainer($("#postList"), draftPosts, { selectable: true, emptyText: draftEmpty });
+  renderPostListContainer($("#monitorPostList"), publishedPosts, {
+    selectable: false,
+    emptyText: "暂无已发布帖子，发布后可在此查看互动数据",
+  });
+  renderPostListContainer($("#publishedPostList"), publishedPosts, {
+    selectable: false,
+    emptyText: "暂无已发布帖子，可点击「拉取广场历史帖子」同步",
+  });
+  const homePublished = publishedPosts.slice(0, 12);
+  renderPostListContainer($("#homePublishedList"), homePublished, {
+    selectable: false,
+    emptyText: "暂无已发布帖子，去草稿箱发布或拉取广场历史帖子",
+  });
+  if (activeView === "home") renderHomeDashboard();
+}
+
+function escapeHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = str || "";
+  return d.innerHTML;
+}
+
+function deletePost(id) {
+  const post = posts.find((p) => p.id === id);
+  if (!post) return;
+  const label = post.publishState === "published" ? "已发布帖子" : "帖子";
+  if (!confirm(`确定删除这条${label}？`)) return;
+  posts = posts.filter((p) => p.id !== id);
+  saveDrafts();
+  renderPosts();
+}
+
+function clearDrafts() {
+  const draftPosts = posts.filter((p) => p.publishState === "draft" || p.publishState === "failed");
+  if (!draftPosts.length) return alert("没有可清空的草稿");
+  if (!confirm(`确定清空 ${draftPosts.length} 条草稿/失败帖子？已发布的帖子会保留。`)) return;
+  posts = posts.filter((p) => p.publishState === "published" || p.publishState === "publishing");
+  saveDrafts();
+  renderPosts();
+}
+
+function deleteSelectedDrafts() {
+  const selected = getSelectedPosts().filter((p) => p.publishState === "draft" || p.publishState === "failed");
+  if (!selected.length) return alert("请先勾选要删除的草稿或失败帖子");
+  if (!confirm(`确定删除选中的 ${selected.length} 条帖子？此操作不可恢复。`)) return;
+  const ids = new Set(selected.map((p) => p.id));
+  posts = posts.filter((p) => !ids.has(p.id));
+  saveDrafts();
+  renderPosts();
+  showAppToast(`已删除 ${selected.length} 条帖子`, "ok");
+}
+
+function clearPublished() {
+  const publishedPosts = posts.filter((p) => p.publishState === "published");
+  if (!publishedPosts.length) return alert("没有已发布的帖子");
+  if (!confirm(`确定清空 ${publishedPosts.length} 条已发布记录？草稿会保留。`)) return;
+  posts = posts.filter((p) => p.publishState !== "published");
+  saveDrafts();
+  renderPosts();
+}
+
+function selectDraftsOnly() {
+  posts.forEach((p) => {
+    p.selected = p.publishState === "draft" || p.publishState === "failed";
+  });
+  saveDrafts();
+  renderPosts();
+}
+
+function selectNone() {
+  posts.forEach((p) => {
+    p.selected = false;
+  });
+  saveDrafts();
+  renderPosts();
+}
+
+function toggleSelectAll(checked) {
+  getFilteredPosts().forEach((p) => {
+    if (p.publishState !== "publishing") p.selected = checked;
+  });
+  saveDrafts();
+  renderPosts();
+}
+
+function openPostModal(id) {
+  $("#editIndex").value = id || "";
+  $("#modalTitle").textContent = id ? "编辑帖子" : "添加帖子";
+  currentImages = [];
+  renderAccountSelectOptions($("#postAccountSelect"), id ? posts.find((p) => p.id === id)?.accountId : getDefaultAccountId());
+
+  if (id) {
+    const p = posts.find((post) => post.id === id);
+    if (!p) return;
+    $("#postText").value = p.text;
+    $("#postTitle").value = p.title || "";
+    $("#postAccountSelect").value = p.accountId || getDefaultAccountId() || "";
+    currentImages = [...(p.imagePaths || [])];
+    $("#imagePreview").innerHTML = currentImages.map((imgId) => `<img src="/uploads/${imgId}" alt="preview" />`).join("");
+  } else {
+    $("#postText").value = "";
+    $("#postTitle").value = "";
+    $("#postImages").value = "";
+    $("#imagePreview").innerHTML = "";
+    renderAccountSelectOptions($("#postAccountSelect"), getDefaultAccountId());
+  }
+
+  $("#charCount").textContent = $("#postText").value.length;
+  openAppModal("postModal");
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, data: reader.result });
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleImageSelect(e) {
+  const files = Array.from(e.target.files);
+  if (!files.length) return;
+
+  try {
+    const encoded = await Promise.all(files.map(fileToBase64));
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files: encoded }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "图片上传失败");
+      return;
+    }
+
+    for (const f of data.files) {
+      currentImages.push(f.id);
+    }
+    renderImagePreview(data.files.map((f) => f.url));
+    alert(`图片上传成功（${data.files.length} 张）`);
+  } catch (err) {
+    alert(`图片上传失败: ${err.message}`);
+  }
+  e.target.value = "";
+}
+
+function renderImagePreview(urls) {
+  const container = $("#imagePreview");
+  const existing = container.innerHTML;
+  const newImgs = urls.map((u) => `<img src="${u}" alt="preview" />`).join("");
+  container.innerHTML = existing + newImgs;
+}
+
+async function savePostFromModal() {
+  const text = $("#postText").value.trim();
+  const title = $("#postTitle").value.trim();
+  const editId = $("#editIndex").value;
+  const accountId = $("#postAccountSelect").value || getDefaultAccountId();
+  const accountName = getAccountName(accountId);
+
+  if (!text) return alert("请输入帖子内容");
+  if (!accountId) return alert("请先添加并选择发布账号");
+
+  if (editId) {
+    const post = posts.find((p) => p.id === editId);
+    if (!post) return;
+    post.text = text;
+    post.title = title;
+    post.imagePaths = [...currentImages];
+    post.accountId = accountId;
+    post.accountName = accountName;
+    post.publishState = "draft";
+    post.selected = true;
+    post.result = null;
+    post.error = null;
+    post.publishedAt = null;
+    post.stats = null;
+    post.statsError = null;
+  } else {
+    posts.push({
+      id: generateId(),
+      text,
+      title,
+      imagePaths: [...currentImages],
+      accountId,
+      accountName,
+      selected: true,
+      publishState: "draft",
+      result: null,
+      error: null,
+      publishedAt: null,
+      createdAt: Date.now(),
+    });
+  }
+
+  saveDrafts();
+  $("#postModal").close();
+  renderPosts();
+}
+
+async function confirmImport() {
+  const activeTab = document.querySelector(".tab.active").dataset.tab;
+  const text = activeTab === "json" ? $("#importJson").value : $("#importText").value;
+  const format = activeTab === "json" ? "json" : "text";
+
+  const res = await fetch("/api/parse-import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, format }),
+  });
+  const data = await res.json();
+  if (!res.ok) return alert(data.error);
+
+  const defaultAccountId = getDefaultAccountId();
+  const defaultAccountName = getAccountName(defaultAccountId);
+
+  for (const item of data.posts) {
+    posts.push({
+      id: generateId(),
+      text: item.text,
+      title: item.title || "",
+      imagePaths: item.imagePaths || [],
+      accountId: defaultAccountId,
+      accountName: defaultAccountName,
+      selected: true,
+      publishState: "draft",
+      result: null,
+      error: null,
+      publishedAt: null,
+      createdAt: Date.now(),
+    });
+  }
+
+  saveDrafts();
+  $("#importModal").close();
+  renderPosts();
+}
+
+async function startBatchPublish() {
+  const selected = getSelectedPosts();
+  if (publishing || selected.length === 0) return;
+  if (!confirm(`确定发布选中的 ${selected.length} 条帖子？`)) return;
+
+  const publishQueue = selected.map((post) => ({
+    post,
+    payload: {
+      text: post.text,
+      title: post.title,
+      imagePaths: post.imagePaths,
+      accountId: post.accountId || getDefaultAccountId(),
+    },
+  }));
+
+  publishing = true;
+  updatePublishBtn();
+  switchView("logs");
+  $("#progressBar").style.width = "0%";
+  $("#progressLog").innerHTML = "";
+  log("开始批量发布...", "info");
+  appendSystemLog(`开始批量发布 ${selected.length} 条帖子`, "info");
+  log("正在校验帖子...", "info");
+
+  publishQueue.forEach(({ post }) => {
+    post.publishState = "publishing";
+    post.error = null;
+  });
+  saveDrafts();
+  renderPosts();
+
+  const intervalSeconds = parseInt($("#intervalInput").value, 10) || 3;
+  const batchPosts = publishQueue.map((item) => item.payload);
+
+  try {
+    const validateRes = await fetch("/api/validate-posts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ posts: batchPosts }),
+    });
+    const validateData = await validateRes.json();
+    if (!validateData.ok) {
+      publishQueue.forEach(({ post }) => {
+        post.publishState = "failed";
+        post.error = validateData.errors[0]?.error || validateData.error || "帖子校验失败";
+      });
+      saveDrafts();
+      log(`✗ ${validateData.errors[0]?.error || validateData.error || "帖子校验失败"}`, "err");
+      $("#progressText").textContent = "发布失败：请重新上传图片";
+      publishing = false;
+      renderPosts();
+      updatePublishBtn();
+      return;
+    }
+
+    const res = await fetch("/api/publish/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ posts: batchPosts, intervalSeconds }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      publishQueue.forEach(({ post }) => {
+        post.publishState = "failed";
+        post.error = err.error || "未知错误";
+      });
+      saveDrafts();
+      log(`✗ 发布失败: ${err.error || "未知错误"}`, "err");
+      publishing = false;
+      renderPosts();
+      updatePublishBtn();
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        const lines = part.split("\n");
+        let event = "message";
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) event = line.slice(7);
+          if (line.startsWith("data: ")) data = line.slice(6);
+        }
+        if (data) handleSSE(event, JSON.parse(data), publishQueue);
+      }
+    }
+  } catch (err) {
+    publishQueue.forEach(({ post }) => {
+      if (post.publishState === "publishing") {
+        post.publishState = "failed";
+        post.error = err.message;
+      }
+    });
+    saveDrafts();
+    log(`✗ 请求失败: ${err.message}`, "err");
+    $("#progressText").textContent = "发布失败，请刷新页面后重试";
+    renderPosts();
+  }
+
+  publishing = false;
+  saveDrafts();
+  updatePublishBtn();
+}
+
+function handleSSE(event, data, publishQueue) {
+  switch (event) {
+    case "start":
+      $("#progressText").textContent = `共 ${data.total} 条，间隔 ${data.intervalSeconds} 秒`;
+      break;
+
+    case "progress":
+      if (publishQueue[data.index]) {
+        publishQueue[data.index].post.publishState = "publishing";
+        saveDrafts();
+        renderPosts();
+      }
+      $("#progressText").textContent = data.message || `正在发布第 ${data.index + 1}/${data.total} 条...`;
+      $("#progressBar").style.width = `${(data.index / data.total) * 100}%`;
+      if (data.message) log(data.message, "info");
+      break;
+
+    case "waiting":
+      log(`等待 ${data.seconds} 秒后发布下一条...`, "info");
+      break;
+
+    case "result": {
+      const item = publishQueue[data.index];
+      if (!item) break;
+      const post = item.post;
+      if (data.ok) {
+        post.publishState = "published";
+        post.result = data.result;
+        post.error = null;
+        post.publishedAt = Date.now();
+        post.selected = false;
+        if (data.accountId) {
+          post.accountId = data.accountId;
+          post.accountName = getAccountName(data.accountId);
+        }
+        log(`✓ 第 ${data.index + 1} 条发布成功 ${data.result.shareLink || ""}`, "ok");
+        refreshPostStats(post.id, { silent: true });
+
+        const postRef = data.result?.id || data.result?.shareLink;
+        const accountId = post.accountId || getDefaultAccountId();
+        if (accountId && data.result?.id) {
+          syncPublishedPostsToServerCache(accountId, [
+            {
+              id: data.result.id,
+              text: post.text,
+              title: post.title || "",
+              shareLink: data.result.shareLink,
+              publishedAt: Date.now(),
+              source: "publish",
+            },
+          ]);
+        }
+        if (postRef && accountId) {
+          discoverAccountFromPost(accountId, postRef)
+            .then(async (discovered) => {
+              if (discovered) {
+                log(
+                  `已识别账号 ${discovered.username ? `@${discovered.username}` : ""}，正在拉取历史已发布帖子...`,
+                  "info",
+                );
+                await showPublishedPostsModal(accountId, { postRef });
+              }
+            })
+            .catch(() => {
+              log("发布成功。点击「拉取广场历史帖子」可获取该账号的历史帖子", "info");
+            });
+        }
+      } else {
+        post.publishState = "failed";
+        post.error = data.error;
+        post.selected = true;
+        log(`✗ 第 ${data.index + 1} 条失败: ${data.error}`, "err");
+      }
+      saveDrafts();
+      renderPosts();
+      break;
+    }
+
+    case "error":
+      log(`⚠ ${data.message}`, "err");
+      break;
+
+    case "done":
+      $("#progressBar").style.width = "100%";
+      $("#progressText").textContent = `完成！成功 ${data.succeeded} 条，失败 ${data.failed} 条`;
+      log(`批量发布完成: 成功 ${data.succeeded} / 失败 ${data.failed}`, "info");
+      saveDrafts();
+      break;
+  }
+}
+
+function log(msg, type) {
+  const el = document.createElement("div");
+  el.className = `log-line ${type}`;
+  el.textContent = msg;
+  $("#progressLog")?.appendChild(el);
+  if ($("#progressLog")) $("#progressLog").scrollTop = $("#progressLog").scrollHeight;
+  appendSystemLog(msg, type);
+}
+
+init();

@@ -1,0 +1,19 @@
+node_modules/
+uploads/*
+!uploads/.gitkeep
+data/*
+!data/.gitkeep
+.env
+.env.*
+*.log
+release/
+.electron-vendor/
+.DS_Store
+Thumbs.db
+
+# 本地敏感配置（切勿提交）
+**/accounts.json
+**/ai-settings.json
+**/openapi-key
+**/settings.json
+**/published-posts-cache.json
