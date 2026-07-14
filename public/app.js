@@ -14,6 +14,10 @@ const ACCOUNT_PAGE_SIZE = 10;
 let accountListState = { query: "", dateFrom: "", dateTo: "", page: 1 };
 let publishedPostsCache = { accountId: null, posts: [] };
 let selectedHistoryAccountId = null;
+/** 互动页筛选账号；空字符串表示全部账号 */
+let selectedMonitorAccountId = "";
+/** 互动页搜索关键词 */
+let monitorSearchQuery = "";
 
 const NO_HISTORY_DETECTED_MSG = "未检测到该账户历史帖子，请发布一条帖子后再来获取";
 const HISTORY_FETCH_CONFIRM_MSG =
@@ -27,11 +31,20 @@ const APP_MODAL_IDS = [
   "postModal",
   "importModal",
   "accountModal",
+  "tokenModal",
   "publishedPostsModal",
   "proxySetupModal",
   "legalModal",
   "aiProfileModal",
+  "updateModal",
 ];
+
+const SKIPPED_UPDATE_VERSION_KEY = "binance-square-skipped-update-version";
+let desktopUpdateState = {
+  currentVersion: "",
+  availableVersion: "",
+};
+let manualUpdateCheckPending = false;
 
 function getAppModal(id) {
   return typeof id === "string" ? document.getElementById(id) : id;
@@ -239,6 +252,8 @@ function defaultMonitorSettings() {
     autoRefreshMinutes: 5,
     viewAlertThreshold: 10,
     notifyBrowser: true,
+    monitorAccountId: "",
+    monitorSearchQuery: "",
   };
 }
 
@@ -273,6 +288,11 @@ function applyMonitorSettingsToUI(settings) {
   $("#autoRefreshMinutes").value = settings.autoRefreshMinutes;
   $("#viewAlertThreshold").value = settings.viewAlertThreshold;
   $("#notifyBrowser").checked = settings.notifyBrowser;
+  selectedMonitorAccountId = settings.monitorAccountId || "";
+  monitorSearchQuery = settings.monitorSearchQuery || "";
+  if ($("#monitorSearchInput")) $("#monitorSearchInput").value = monitorSearchQuery;
+  renderMonitorAccountSelect();
+  updateMonitorSectionHint();
   updateAutoRefreshStatus();
 }
 
@@ -282,6 +302,8 @@ function readMonitorSettingsFromUI() {
     autoRefreshMinutes: Math.max(1, parseInt($("#autoRefreshMinutes").value, 10) || 5),
     viewAlertThreshold: Math.max(1, parseInt($("#viewAlertThreshold").value, 10) || 10),
     notifyBrowser: $("#notifyBrowser").checked,
+    monitorAccountId: getSelectedMonitorAccountId(),
+    monitorSearchQuery: getMonitorSearchQuery(),
   };
 }
 
@@ -328,8 +350,12 @@ function setupAutoRefresh() {
   }
 }
 
-function sortPostsNewestFirst(list) {
-  return [...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+function sortPostsNewestFirst(list, timeKey = "createdAt") {
+  return [...list].sort((a, b) => {
+    const tb = b[timeKey] || b.createdAt || 0;
+    const ta = a[timeKey] || a.createdAt || 0;
+    return tb - ta;
+  });
 }
 
 function getDraftPosts() {
@@ -345,7 +371,10 @@ function getDraftPosts() {
 }
 
 function getPublishedPosts() {
-  return posts.filter((p) => p.publishState === "published");
+  return sortPostsNewestFirst(
+    posts.filter((p) => p.publishState === "published"),
+    "publishedAt",
+  );
 }
 
 function getFilteredPosts() {
@@ -363,6 +392,13 @@ function switchView(view) {
     refreshApiAiManagePanel();
   }
   if (view === "ai") loadAiConfig();
+  if (view === "ai-host") loadAiConfig();
+  if (view === "tokens") loadTokenRegistry();
+  else stopTokenQuotesAutoRefresh();
+  if (view === "monitor") {
+    renderMonitorAccountSelect();
+    updateMonitorSectionHint();
+  }
   if (view === "home") renderHomeDashboard();
   if (view === "logs") $("#progressPanel")?.classList.remove("hidden");
   renderPosts();
@@ -427,6 +463,47 @@ function appendSystemLog(msg, type = "info") {
   el.textContent = `[${stamp}] ${msg}`;
   box.appendChild(el);
   box.scrollTop = box.scrollHeight;
+}
+
+let systemLogSinceId = 0;
+let systemLogPolling = false;
+
+async function pollServerSystemLogs() {
+  if (systemLogPolling) return;
+  systemLogPolling = true;
+  try {
+    const res = await fetch(`/api/system-log?sinceId=${systemLogSinceId}&limit=100`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const rows = data.logs || [];
+    for (const row of rows) {
+      systemLogSinceId = Math.max(systemLogSinceId, row.id || 0);
+      const type = row.type === "err" || row.type === "error" ? "err" : row.type === "ok" ? "ok" : "info";
+      const stamp = new Date(row.time || Date.now()).toLocaleTimeString("zh-CN", { hour12: false });
+      const box = $("#systemLog");
+      if (!box) continue;
+      const el = document.createElement("div");
+      el.className = `log-line ${type}`;
+      el.textContent = `[${stamp}] ${row.message}`;
+      box.appendChild(el);
+      box.scrollTop = box.scrollHeight;
+    }
+  } catch {
+    // ignore poll errors
+  } finally {
+    systemLogPolling = false;
+  }
+}
+
+async function clearServerSystemLogs() {
+  try {
+    await fetch("/api/system-log", { method: "DELETE" });
+  } catch {
+    // ignore
+  }
+  systemLogSinceId = 0;
+  if ($("#systemLog")) $("#systemLog").innerHTML = "";
+  appendSystemLog("已清空系统日志", "info");
 }
 
 function showAppToast(message, type = "ok") {
@@ -609,6 +686,95 @@ function buildPostAccountBlock(p, { editable = false } = {}) {
     </div>`;
 }
 
+function getPostAccountId(post) {
+  return post?.accountId || getDefaultAccountId() || "";
+}
+
+function getSelectedMonitorAccountId() {
+  return selectedMonitorAccountId || $("#monitorAccountSelect")?.value || loadMonitorSettings().monitorAccountId || "";
+}
+
+function getMonitorSearchQuery() {
+  return ($("#monitorSearchInput")?.value || monitorSearchQuery || "").trim().toLowerCase();
+}
+
+function postMatchesMonitorSearch(post, query) {
+  if (!query) return true;
+  const haystack = [
+    post.text,
+    post.title,
+    post.accountName,
+    getAccountName(getPostAccountId(post)),
+    post.result?.shareLink,
+    post.result?.id,
+    post.result?.postId,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
+}
+
+function getPublishedPostsForMonitor() {
+  const published = getPublishedPosts();
+  const accountId = getSelectedMonitorAccountId();
+  const query = getMonitorSearchQuery();
+  let list = accountId ? published.filter((p) => getPostAccountId(p) === accountId) : published;
+  if (query) list = list.filter((p) => postMatchesMonitorSearch(p, query));
+  return list;
+}
+
+function renderMonitorAccountSelect() {
+  const select = $("#monitorAccountSelect");
+  if (!select) return;
+  if (!accountStore.accounts.length) {
+    select.innerHTML = `<option value="">暂无账号</option>`;
+    selectedMonitorAccountId = "";
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  const saved = loadMonitorSettings().monitorAccountId || "";
+  let value = selectedMonitorAccountId || saved || "";
+
+  if (accountStore.accounts.length === 1) {
+    value = accountStore.accounts[0].id;
+    select.innerHTML = `<option value="${accountStore.accounts[0].id}" selected>${escapeHtml(accountStore.accounts[0].name)}</option>`;
+    selectedMonitorAccountId = value;
+    return;
+  }
+
+  const options = [`<option value="" ${value === "" ? "selected" : ""}>全部账号</option>`];
+  for (const a of accountStore.accounts) {
+    options.push(
+      `<option value="${a.id}" ${a.id === value ? "selected" : ""}>${escapeHtml(a.name)}${a.isDefault ? "（默认）" : ""}</option>`,
+    );
+  }
+  select.innerHTML = options.join("");
+  selectedMonitorAccountId = value;
+}
+
+function updateMonitorSectionHint() {
+  const el = $("#monitorSectionHint");
+  if (!el) return;
+  if (!accountStore.accounts.length) {
+    el.textContent = "请先在「账号管理」中添加账号。";
+    return;
+  }
+  const accountId = getSelectedMonitorAccountId();
+  const query = getMonitorSearchQuery();
+  const parts = [];
+  if (accountId) {
+    parts.push(`账号「${getAccountName(accountId)}」`);
+  } else {
+    parts.push("全部账号");
+  }
+  if (query) {
+    parts.push(`搜索「${query}」`);
+  }
+  el.textContent = `当前显示 ${parts.join(" · ")} 的已发布帖子，可展开查看评论与互动数据。`;
+}
+
 function renderAccountSelectOptions(selectEl, selectedId) {
   if (!selectEl) return;
   if (!accountStore.accounts.length) {
@@ -638,6 +804,8 @@ function renderAccountSelects() {
     selectedHistoryAccountId = historyValue;
     $("#historyAccountSelect").classList.toggle("hidden", accountStore.accounts.length <= 1);
   }
+  renderMonitorAccountSelect();
+  updateMonitorSectionHint();
   if ($("#publishedPostsAccountSelect")?.closest("dialog")?.open) {
     const current = $("#publishedPostsAccountSelect").value || publishedPostsCache.accountId || getDefaultAccountId();
     renderAccountSelectOptions($("#publishedPostsAccountSelect"), current);
@@ -693,7 +861,8 @@ function updateProxyDetailsVisibility(scope = "account") {
   } else if (type === "ssh") {
     hint.textContent = "SSH 隧道通过 Socks5 连接。填写隧道主机、端口与账号密码后，本账号固定走该代理。";
   } else {
-    hint.textContent = "填写代理 IP 与端口后保存，本账号发帖、拉取历史、验证 Key 均走此代理。";
+    hint.textContent =
+      "填写代理 IP 与端口后保存。点「检测代理」只验证代理出网；点「验证 Key」才会经代理连接币安。";
   }
   if (scope === "account") updateAccountProxyModeTip(type);
 }
@@ -723,63 +892,125 @@ function applyProxyToUI(scope, proxyConfig) {
   proxyEl(meta.prefix, "HostInput").value = config.host || (useGlobalDefaults ? "127.0.0.1" : "");
   proxyEl(meta.prefix, "PortInput").value = config.port || (useGlobalDefaults ? "7897" : "");
   proxyEl(meta.prefix, "UserInput").value = config.username || "";
-  proxyEl(meta.prefix, "PassInput").value = "";
-  proxyEl(meta.prefix, "PassInput").placeholder = config.hasPassword ? "已保存，留空不修改" : "选填";
+  const passInput = proxyEl(meta.prefix, "PassInput");
+  if (passInput) {
+    passInput.value = "";
+    passInput.placeholder =
+      config.hasPassword || config.password === "******" ? "已保存，留空不修改" : "选填";
+  }
   updateProxyDetailsVisibility(scope);
+}
+
+function isBlankProxyPasswordInput(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return true;
+  if (/^\*+$/.test(text) || /^•+$/.test(text) || /^·+$/.test(text)) return true;
+  if (/已保存|留空不修改|^选填$/.test(text)) return true;
+  return false;
 }
 
 function collectProxyFromUI(scope) {
   const meta = PROXY_UI[scope];
   const type = proxyEl(meta.prefix, "TypeSelect")?.value || meta.defaultType;
+  const passEl = proxyEl(meta.prefix, "PassInput");
   const config = {
     type,
     host: proxyEl(meta.prefix, "HostInput")?.value.trim() || "",
     port: proxyEl(meta.prefix, "PortInput")?.value.trim() || "",
     username: proxyEl(meta.prefix, "UserInput")?.value.trim() || "",
-    password: proxyEl(meta.prefix, "PassInput")?.value || "",
+    password: passEl?.value || "",
   };
   if (type === "global" || type === "direct") {
     config.host = "";
     config.port = "";
     config.username = "";
     delete config.password;
-  } else if (!config.password) {
+  } else if (isBlankProxyPasswordInput(config.password)) {
+    // 留空/掩码 → 不传密码，由服务端合并已保存密码
     delete config.password;
   }
   return config;
 }
 
+function parseProxyQuickText(text, preferredType = "http") {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const colonFormat = raw.match(/^(https?|socks5|ssh):\/\/([^:/]+):(\d+)(?::([^:]*))?(?::(.*))?$/i);
+  if (colonFormat) {
+    const [, type, host, port, username = "", password = ""] = colonFormat;
+    return { type: type.toLowerCase(), host: host.trim(), port: String(port), username, password };
+  }
+
+  const urlAuth = raw.match(/^(https?|socks5|ssh):\/\/(?:([^:@]+):([^@]*)@)?([^:/]+):(\d+)$/i);
+  if (urlAuth) {
+    const [, type, username = "", password = "", host, port] = urlAuth;
+    return { type: type.toLowerCase(), host: host.trim(), port: String(port), username, password };
+  }
+
+  // user:pass@host:port
+  const authAt = raw.match(/^([^:@\s]+):([^@\s]*)@([^:/]+):(\d+)$/);
+  if (authAt) {
+    const [, username, password, host, port] = authAt;
+    return { type: preferredType, host: host.trim(), port: String(port), username, password };
+  }
+
+  // host:port:user:pass（常见供应商格式，无协议前缀）
+  const bareAuth = raw.match(/^([^:/?\s]+):(\d+):([^:]*):(.*)$/);
+  if (bareAuth) {
+    const [, host, port, username = "", password = ""] = bareAuth;
+    return { type: preferredType, host: host.trim(), port: String(port), username, password };
+  }
+
+  // host:port
+  const bareHost = raw.match(/^([^:/?\s]+):(\d+)$/);
+  if (bareHost) {
+    const [, host, port] = bareHost;
+    return { type: preferredType, host: host.trim(), port: String(port), username: "", password: "" };
+  }
+
+  return null;
+}
+
 function parseProxyQuickInput(scope) {
   const meta = PROXY_UI[scope];
-  const raw = proxyEl(meta.prefix, "QuickInput")?.value.trim();
+  const quickEl = proxyEl(meta.prefix, "QuickInput");
+  const raw = quickEl?.value.trim();
   if (!raw) return;
-  const patterns = [
-    /^(https?|socks5|ssh):\/\/([^:/]+):(\d+)(?::([^:]*))?(?::(.*))?$/i,
-    /^(https?|socks5|ssh):\/\/(?:([^:@]+):([^@]*)@)?([^:/]+):(\d+)$/i,
-  ];
-  let parsed = null;
-  const colonMatch = raw.match(patterns[0]);
-  if (colonMatch) {
-    const [, type, host, port, username = "", password = ""] = colonMatch;
-    parsed = { type: type.toLowerCase(), host, port, username, password };
-  } else {
-    const authMatch = raw.match(patterns[1]);
-    if (authMatch) {
-      const [, type, username = "", password = "", host, port] = authMatch;
-      parsed = { type: type.toLowerCase(), host, port, username, password };
-    }
-  }
+
+  const currentType = proxyEl(meta.prefix, "TypeSelect")?.value || meta.defaultType;
+  const preferredType = ["http", "https", "socks5", "ssh"].includes(currentType) ? currentType : "socks5";
+  const parsed = parseProxyQuickText(raw, preferredType);
+
   if (!parsed) {
-    meta.onMessage("无法识别代理格式，请使用 http://主机:端口:账号:密码", "err");
+    meta.onMessage("无法识别代理格式。支持：IP:端口:账号:密码 或 http://主机:端口:账号:密码", "err");
     return;
   }
-  proxyEl(meta.prefix, "TypeSelect").value = parsed.type === "ssh" ? "ssh" : parsed.type === "socks5" ? "socks5" : parsed.type === "https" ? "https" : "http";
+
+  const nextType =
+    parsed.type === "ssh"
+      ? "ssh"
+      : parsed.type === "socks5"
+        ? "socks5"
+        : parsed.type === "https"
+          ? "https"
+          : parsed.type === "http"
+            ? "http"
+            : preferredType;
+
+  // 当前若是「全局/直连」，自动切到自定义代理，否则字段无法编辑
+  if (currentType === "global" || currentType === "direct") {
+    proxyEl(meta.prefix, "TypeSelect").value = nextType;
+  } else if (["http", "https", "socks5", "ssh"].includes(parsed.type)) {
+    proxyEl(meta.prefix, "TypeSelect").value = nextType;
+  }
+
   proxyEl(meta.prefix, "HostInput").value = parsed.host;
   proxyEl(meta.prefix, "PortInput").value = parsed.port;
   proxyEl(meta.prefix, "UserInput").value = parsed.username || "";
   if (parsed.password) proxyEl(meta.prefix, "PassInput").value = parsed.password;
   updateProxyDetailsVisibility(scope);
-  meta.onMessage("已自动拆分代理配置", "ok");
+  meta.onMessage("已自动拆分到主机 / 端口 / 账号 / 密码", "ok");
 }
 
 function getAccountProxyConfig(accountId) {
@@ -1011,21 +1242,26 @@ async function init() {
   posts = loadDrafts();
   alerts = loadAlerts();
   applyMonitorSettingsToUI(loadMonitorSettings());
+  selectedMonitorAccountId = loadMonitorSettings().monitorAccountId || "";
+  monitorSearchQuery = loadMonitorSettings().monitorSearchQuery || "";
   await loadAccounts();
   await syncAllLocalPublishedToCache();
   await loadConfig();
   await loadAiConfig();
   initAiCollapseSections();
   bindEvents();
+  initDesktopUpdater();
   switchView("home");
   renderPosts();
   renderAlerts();
   if (loadMonitorSettings().autoRefreshEnabled) startAutoRefresh();
   setInterval(refreshAiRuntimeStatus, 30000);
+  setInterval(pollServerSystemLogs, 5000);
+  pollServerSystemLogs();
 }
 
 async function refreshAiRuntimeStatus() {
-  if (activeView !== "ai") return;
+  if (activeView !== "ai-host" && activeView !== "ai") return;
   try {
     const res = await fetch("/api/ai/config");
     const data = await res.json();
@@ -1057,8 +1293,10 @@ async function loadConfig() {
     updateSystemProxyHint(data.proxyConfig);
     maybeNotifySystemProxy(data.proxyConfig);
   }
-  if (data.dataDir && $("#dataDirHint")) {
-    $("#dataDirHint").textContent = `数据与缓存目录：${data.dataDir}（账号、AI 配置、帖子缓存等均保存在此）`;
+  if (data.dataDirInfo) {
+    applyDataDirToUI(data.dataDirInfo);
+  } else if (data.dataDir) {
+    applyDataDirToUI({ currentDir: data.dataDir, defaultDir: data.dataDir });
   }
   if ($("#browserPathInput")) {
     $("#browserPathInput").value = data.browserPath || "";
@@ -1177,13 +1415,35 @@ function bindEvents() {
   $("#btnGoAccounts")?.addEventListener("click", () => switchView("accounts"));
   $("#btnAddAiProfile")?.addEventListener("click", () => openAiProfileModal(null));
   $("#btnGoAiSettings")?.addEventListener("click", () => switchView("ai"));
+  $("#btnAddToken")?.addEventListener("click", () => openTokenModal(null));
+  $("#btnRefreshTokenQuotes")?.addEventListener("click", () => refreshTokenQuotes(true));
+  $("#btnSyncBinanceTokens")?.addEventListener("click", syncBinanceTokensFromUi);
+  $("#btnSaveTokenRefresh")?.addEventListener("click", saveTokenRefreshSettings);
+  $("#tokenSearchInput")?.addEventListener("input", (e) => {
+    tokenRegistryState.query = e.target.value || "";
+    tokenRegistryState.page = 1;
+    renderTokenRegistryTable();
+  });
+  $("#tokenRegistryPagination")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-token-page]");
+    if (!btn) return;
+    const page = Number(btn.dataset.tokenPage);
+    if (!Number.isFinite(page) || page < 1) return;
+    tokenRegistryState.page = page;
+    renderTokenRegistryTable();
+    refreshTokenQuotes(false);
+  });
+  $("#tokenForm")?.addEventListener("submit", saveTokenFromModal);
+  $("#btnCancelToken")?.addEventListener("click", () => $("#tokenModal")?.close());
+  $("#tokenRegistryBody")?.addEventListener("click", onTokenRegistryClick);
+  $("#tokenRegistryBody")?.addEventListener("change", onTokenRegistryChange);
   $("#apiAiProfilesList")?.addEventListener("click", onApiAiProfilesListClick);
   $("#aiProfileForm")?.addEventListener("submit", saveAiProfileFromModal);
   $("#btnCancelAiProfile")?.addEventListener("click", () => $("#aiProfileModal")?.close());
   $("#btnTestAiProfileModal")?.addEventListener("click", testAiProfileFromModal);
   $("#aiProfileProviderSelect")?.addEventListener("change", onAiProfileProviderChange);
   $("#btnClearSystemLog")?.addEventListener("click", () => {
-    if ($("#systemLog")) $("#systemLog").innerHTML = "";
+    clearServerSystemLogs();
   });
 
   $("#btnAddAccount").addEventListener("click", () => openAccountModal(null));
@@ -1205,6 +1465,14 @@ function bindEvents() {
   $("#btnAccountClearFilters")?.addEventListener("click", resetAccountListFilters);
   $("#btnSaveProxy").addEventListener("click", saveProxy);
   $("#btnTestNetwork").addEventListener("click", testNetwork);
+  $("#btnPickDataDir")?.addEventListener("click", pickDataDir);
+  $("#btnSaveDataDir")?.addEventListener("click", saveDataDir);
+  $("#btnResetDataDir")?.addEventListener("click", resetDataDir);
+  $("#btnRestartApp")?.addEventListener("click", restartAppForDataDir);
+  $("#btnCheckUpdate")?.addEventListener("click", manualCheckForUpdates);
+  $("#btnUpdateDownload")?.addEventListener("click", startUpdateDownload);
+  $("#btnUpdateInstall")?.addEventListener("click", installDownloadedUpdate);
+  $("#btnUpdateLater")?.addEventListener("click", () => dismissUpdateModal(true));
   $("#btnSaveBrowser")?.addEventListener("click", saveBrowserPath);
   $("#btnTestBrowser")?.addEventListener("click", testBrowser);
   $("#btnProxySetupApplySystem")?.addEventListener("click", applySystemProxyFromGuide);
@@ -1212,6 +1480,9 @@ function bindEvents() {
   $("#btnProxySetupLater")?.addEventListener("click", dismissProxySetupGuide);
   $("#globalProxyTypeSelect")?.addEventListener("change", () => updateProxyDetailsVisibility("global"));
   $("#globalProxyQuickInput")?.addEventListener("change", () => parseProxyQuickInput("global"));
+  $("#globalProxyQuickInput")?.addEventListener("paste", () => {
+    setTimeout(() => parseProxyQuickInput("global"), 0);
+  });
   $("#globalProxyQuickInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -1219,6 +1490,11 @@ function bindEvents() {
     }
   });
   $("#btnSaveAiConfig").addEventListener("click", saveAiConfig);
+  $("#btnSaveAiSettings")?.addEventListener("click", saveAiSettingsOnly);
+  $("#btnPreviewAiStyleRef")?.addEventListener("click", () => previewAiStyleReference());
+  $("#btnAddAiStyleRef")?.addEventListener("click", addAiStyleReferenceFromUi);
+  $("#aiStyleRefFileInput")?.addEventListener("change", onAiStyleRefFileSelected);
+  $("#aiStyleRefList")?.addEventListener("click", onAiStyleRefListClick);
   $("#btnTestAi").addEventListener("click", testAiApi);
   $("#aiProviderSelect")?.addEventListener("change", onAiProviderChange);
   $("#btnAddCustomToken")?.addEventListener("click", addCustomTokenFromInput);
@@ -1246,6 +1522,9 @@ function bindEvents() {
   $("#btnCancelAccountModal").addEventListener("click", () => $("#accountModal").close());
   $("#accountProxyTypeSelect")?.addEventListener("change", updateAccountProxyDetailsVisibility);
   $("#accountProxyQuickInput")?.addEventListener("change", parseAccountProxyQuickInput);
+  $("#accountProxyQuickInput")?.addEventListener("paste", () => {
+    setTimeout(parseAccountProxyQuickInput, 0);
+  });
   $("#accountProxyQuickInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -1269,6 +1548,24 @@ function bindEvents() {
   $("#btnSelectNone").addEventListener("click", selectNone);
   $("#btnApplyBulkAccount")?.addEventListener("click", applyBulkAccountToSelected);
   $("#btnRefreshAllStats").addEventListener("click", () => refreshAllStats());
+  $("#monitorAccountSelect")?.addEventListener("change", (e) => {
+    selectedMonitorAccountId = e.target.value;
+    const settings = loadMonitorSettings();
+    settings.monitorAccountId = selectedMonitorAccountId;
+    saveMonitorSettings(settings);
+    updateMonitorSectionHint();
+    renderPosts();
+    renderAlerts();
+  });
+  $("#monitorSearchInput")?.addEventListener("input", () => {
+    monitorSearchQuery = getMonitorSearchQuery();
+    const settings = loadMonitorSettings();
+    settings.monitorSearchQuery = monitorSearchQuery;
+    saveMonitorSettings(settings);
+    updateMonitorSectionHint();
+    renderPosts();
+    renderAlerts();
+  });
   $("#btnFetchHistoryPosts").addEventListener("click", () => fetchHistoryForCurrentAccount());
   $("#historyAccountSelect")?.addEventListener("change", (e) => {
     selectedHistoryAccountId = e.target.value;
@@ -1357,17 +1654,41 @@ async function setDefaultAccount(accountId, { silent = false } = {}) {
 
 function openAccountModal(accountId) {
   const isEdit = Boolean(accountId);
+  const acc = isEdit ? accountStore.accounts.find((a) => a.id === accountId) : null;
   $("#editAccountId").value = accountId || "";
   $("#accountModalTitle").textContent = isEdit ? "编辑账号" : "添加账号";
   $("#accountNameInput").value = isEdit ? getAccountName(accountId) : "";
   $("#accountUsernameInput").value = isEdit ? getAccountUsername(accountId) : "";
   applyAccountProxyToUI(isEdit ? getAccountProxyConfig(accountId) : { type: "global" });
-  $("#accountApiKeyInput").value = "";
+  // 编辑时故意不回填明文 Key；留空表示不修改，避免误覆盖
+  const apiKeyInput = $("#accountApiKeyInput");
+  apiKeyInput.value = "";
   $("#accountCookieInput").value = "";
-  $("#accountApiKeyInput").required = !isEdit;
+  apiKeyInput.required = !isEdit;
+  apiKeyInput.autocomplete = "new-password";
+  apiKeyInput.placeholder = isEdit && acc?.hasApiKey
+    ? `已保存 ${acc.maskedKey || "***"}（留空不修改）`
+    : "粘贴 Square OpenAPI Key";
   $("#apiKeyRequired").style.display = isEdit ? "none" : "inline";
   $("#apiKeyHint").classList.toggle("hidden", !isEdit);
-  showAccountFormMessage("", "");
+  if (isEdit) {
+    const keyHint = acc?.hasApiKey
+      ? `已保存 Key：${acc.maskedKey || "***"}。验证与保存时留空都会沿用原 Key，不会丢失。`
+      : "该账号尚未配置 API Key，请粘贴后保存";
+    $("#apiKeyHint").textContent = keyHint;
+    const cookieHint = $("#accountCookieHint");
+    if (cookieHint) {
+      cookieHint.textContent = acc?.hasCookie
+        ? "已配置 Cookie：下方留空表示不修改；仅填空格再保存可清除。"
+        : "配置 Cookie 可立即拉取历史帖子；不配置则需先发布 1 条帖子，系统会自动识别用户名";
+    }
+  } else {
+    $("#apiKeyHint").textContent = "编辑已有账号时留空表示不修改";
+  }
+  showAccountFormMessage(
+    isEdit && acc?.hasApiKey ? "编辑模式：API Key 留空不会丢失，验证将使用已保存的 Key。" : "",
+    isEdit && acc?.hasApiKey ? "info" : "",
+  );
   openAppModal("accountModal");
 }
 
@@ -1728,9 +2049,13 @@ async function saveAccountFromModal() {
   const proxyConfig = collectAccountProxyFromUI();
   const apiKey = $("#accountApiKeyInput").value.trim();
   const cookieRaw = $("#accountCookieInput").value;
+  const existing = accountId ? accountStore.accounts.find((a) => a.id === accountId) : null;
 
   if (!name) return showAccountFormMessage("请输入账号名称", "err");
   if (!accountId && !apiKey) return showAccountFormMessage("请输入 API Key", "err");
+  if (accountId && !apiKey && !existing?.hasApiKey) {
+    return showAccountFormMessage("该账号还没有 API Key，请填写后再保存", "err");
+  }
   if (["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
     if (!proxyConfig.host || !proxyConfig.port) {
       return showAccountFormMessage("请填写代理主机和端口", "err");
@@ -1738,6 +2063,7 @@ async function saveAccountFromModal() {
   }
 
   const payload = { name, username, proxyConfig };
+  // 仅当用户明确填写了新 Key 才更新；留空绝对不传，防止覆盖
   if (apiKey) payload.apiKey = apiKey;
   if (accountId) {
     if (cookieRaw.length > 0 && cookieRaw.trim() === "") payload.cookie = "";
@@ -1794,9 +2120,36 @@ async function deleteAccount(accountId) {
   }
 }
 
+function applySuggestedProxyType(scope, suggestedType) {
+  if (!["http", "https", "socks5"].includes(suggestedType)) return false;
+  const select = proxyEl(PROXY_UI[scope]?.prefix, "TypeSelect");
+  if (!select) return false;
+  if (select.value === suggestedType) {
+    updateProxyDetailsVisibility(scope);
+    if (scope === "account") updateAccountProxyModeTip(suggestedType);
+    return false;
+  }
+  select.value = suggestedType;
+  // 同步绿色状态条与详情区，确保用户能立刻看到切换结果
+  updateProxyDetailsVisibility(scope);
+  if (scope === "account") updateAccountProxyModeTip(suggestedType);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function maybeApplyProbeProxyType(scope, data, currentType) {
+  const suggested = data?.suggestedProxyType;
+  if (!suggested) return false;
+  if (suggested === currentType && !data.typeCorrected) return false;
+  return applySuggestedProxyType(scope, suggested);
+}
+
 async function testAccountProxy() {
-  const accountId = $("#editAccountId").value || undefined;
+  const btn = $("#btnTestAccountProxy");
+  const accountId = ($("#editAccountId").value || "").trim() || undefined;
   const proxyConfig = collectAccountProxyFromUI();
+  const existing = accountId ? accountStore.accounts.find((a) => a.id === accountId) : null;
+  const useSavedProxyPassword = !Object.prototype.hasOwnProperty.call(proxyConfig, "password");
   if (!["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
     showAccountFormMessage("请先选择自定义代理类型（Socks5 / HTTP 等）", "err");
     return;
@@ -1805,38 +2158,121 @@ async function testAccountProxy() {
     showAccountFormMessage("请填写代理主机和端口", "err");
     return;
   }
-  showAccountFormMessage("正在检测代理连通性...", "info");
+  if (useSavedProxyPassword && accountId && existing?.proxyConfig?.hasPassword === false) {
+    showAccountFormMessage("该账号尚未保存代理密码，请填写密码后再检测", "err");
+    return;
+  }
+  const prevText = btn?.textContent || "检测代理";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "检测中…";
+  }
+  showAccountFormMessage(
+    useSavedProxyPassword && accountId ? "正在用已保存的代理密码快速检测…" : "正在快速检测代理出网…",
+    "info",
+  );
   try {
     const res = await fetch("/api/config/network-test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proxyConfig, accountId }),
+      body: JSON.stringify({
+        proxyConfig,
+        accountId,
+        useSavedProxyPassword: Boolean(useSavedProxyPassword && accountId),
+      }),
     });
     const data = await res.json();
-    showAccountFormMessage(res.ok ? data.message : data.error || "代理检测失败", res.ok ? "ok" : "err");
+    const switched = maybeApplyProbeProxyType("account", data, proxyConfig.type);
+    let msg = data.message || data.error || "代理检测失败";
+    if (switched) {
+      msg = `${msg}（「代理方式」已自动切换为 ${String(data.suggestedProxyType).toUpperCase()}）`;
+    }
+    showAccountFormMessage(msg, data.ok ? "ok" : "err");
   } catch {
     showAccountFormMessage("无法连接本地服务", "err");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevText;
+    }
   }
 }
 
+function isBlankApiKeyInput(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return true;
+  if (/^\*+$/.test(text) || /^•+$/.test(text)) return true;
+  if (/已保存|留空不修改|粘贴 Square/i.test(text)) return true;
+  // 误把脱敏 Key（如 abcd...wxyz）当真 Key 提交
+  if (/^[A-Za-z0-9_-]{2,8}\.{3}[A-Za-z0-9_-]{2,8}$/.test(text)) return true;
+  return false;
+}
+
 async function testAccountKey() {
-  const accountId = $("#editAccountId").value;
-  const apiKey = $("#accountApiKeyInput").value.trim();
+  const btn = $("#btnTestAccountKey");
+  const accountId = ($("#editAccountId").value || "").trim();
+  const rawApiKey = $("#accountApiKeyInput").value;
+  const apiKey = isBlankApiKeyInput(rawApiKey) ? "" : String(rawApiKey).trim();
   const proxyConfig = collectAccountProxyFromUI();
+  const existing = accountId ? accountStore.accounts.find((a) => a.id === accountId) : null;
+  const useSavedApiKey = !apiKey && Boolean(accountId);
+
+  if (!apiKey && !accountId) {
+    showAccountFormMessage("请先填写 API Key", "err");
+    return;
+  }
+  if (useSavedApiKey && !existing?.hasApiKey) {
+    showAccountFormMessage("该账号尚未保存 API Key，请先粘贴 Key 再验证", "err");
+    return;
+  }
+  if (["http", "https", "socks5", "ssh"].includes(proxyConfig.type) && (!proxyConfig.host || !proxyConfig.port)) {
+    showAccountFormMessage("已选独立代理，请先填写代理主机和端口", "err");
+    return;
+  }
+
+  const prevText = btn?.textContent || "验证 Key";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "验证中…";
+  }
+  const viaProxy = ["http", "https", "socks5", "ssh"].includes(proxyConfig.type);
+  showAccountFormMessage(
+    useSavedApiKey
+      ? viaProxy
+        ? `正在用已保存的 Key（${existing?.maskedKey || "***"}）经代理验证币安（不稳定时会自动重试）…`
+        : `正在用已保存的 Key（${existing?.maskedKey || "***"}）验证…`
+      : viaProxy
+        ? "正在经代理验证新填写的 Key（不稳定时会自动重试）…"
+        : "正在验证新填写的 Key…",
+    "info",
+  );
+
   try {
     const res = await fetch("/api/config/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        apiKey: apiKey || undefined,
-        accountId: accountId || undefined,
+        ...(apiKey ? { apiKey } : {}),
+        ...(accountId ? { accountId } : {}),
+        useSavedApiKey,
         proxyConfig,
       }),
     });
     const data = await res.json();
-    showAccountFormMessage(res.ok ? data.message : data.error || "验证失败", res.ok ? "ok" : "err");
+    if (res.ok) {
+      showAccountFormMessage(data.message || "API Key 验证成功（已连通币安）", "ok");
+    } else {
+      const err = data.error || "验证失败";
+      const needPrefix = !/币安|API Key|未配置|未授权|访问被拒绝|偶发|自动重试/.test(err);
+      showAccountFormMessage(needPrefix ? `连接币安验证 Key 失败：${err}` : err, "err");
+    }
   } catch {
     showAccountFormMessage("请求失败，请检查本地服务是否运行", "err");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevText;
+    }
   }
 }
 
@@ -1880,17 +2316,329 @@ async function saveProxy() {
   }
 }
 
+function showDataDirMessage(msg, type) {
+  const el = $("#dataDirMessage");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function applyDataDirToUI(info = {}) {
+  const hint = $("#dataDirHint");
+  const input = $("#dataDirInput");
+  const pickBtn = $("#btnPickDataDir");
+  const restartBtn = $("#btnRestartApp");
+  const currentDir = info.currentDir || "";
+  const defaultDir = info.defaultDir || currentDir;
+  const canPick = Boolean(info.canPickFolder || window.desktopApi?.isDesktop);
+
+  if (hint && currentDir) {
+    const tag = info.isCustom ? "自定义" : "默认";
+    hint.textContent = `当前数据目录（${tag}）：${currentDir}`;
+  }
+  if (input) {
+    input.value = info.customDir || currentDir || defaultDir || "";
+    if (defaultDir) input.placeholder = defaultDir;
+  }
+  if (pickBtn) pickBtn.classList.toggle("hidden", !canPick);
+  if (restartBtn) restartBtn.classList.add("hidden");
+}
+
+async function refreshDataDirInfo() {
+  try {
+    const res = await fetch("/api/config/data-dir");
+    if (!res.ok) return;
+    applyDataDirToUI(await res.json());
+  } catch {
+    // ignore
+  }
+}
+
+async function pickDataDir() {
+  if (window.desktopApi?.pickDirectory) {
+    try {
+      const picked = await window.desktopApi.pickDirectory();
+      if (picked && $("#dataDirInput")) $("#dataDirInput").value = picked;
+    } catch {
+      showDataDirMessage("无法打开文件夹选择器", "err");
+    }
+    return;
+  }
+  showDataDirMessage("请直接在输入框粘贴绝对路径（例如 D:\\数据\\binance-square）", "info");
+}
+
+async function saveDataDir() {
+  const dirPath = ($("#dataDirInput")?.value || "").trim();
+  if (!dirPath) {
+    showDataDirMessage("请填写或选择数据保存目录", "err");
+    return;
+  }
+  if (
+    !confirm(
+      `确定将数据目录改为：\n${dirPath}\n\n现有数据将复制到新目录（同名文件不覆盖），之后需重启应用才能完全生效。`,
+    )
+  ) {
+    return;
+  }
+  showDataDirMessage("正在迁移数据…", "info");
+  try {
+    const res = await fetch("/api/config/data-dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: dirPath, migrate: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showDataDirMessage(data.error || "设置失败", "err");
+      return;
+    }
+    showDataDirMessage(data.message || "数据目录已更新", "ok");
+    await refreshDataDirInfo();
+    $("#btnRestartApp")?.classList.remove("hidden");
+  } catch {
+    showDataDirMessage("无法连接本地服务", "err");
+  }
+}
+
+async function resetDataDir() {
+  if (!confirm("确定恢复为默认数据目录？现有数据将复制回默认位置，之后需重启应用才能完全生效。")) {
+    return;
+  }
+  showDataDirMessage("正在恢复默认目录…", "info");
+  try {
+    const res = await fetch("/api/config/data-dir/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ migrate: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showDataDirMessage(data.error || "恢复失败", "err");
+      return;
+    }
+    showDataDirMessage(data.message || "已恢复默认目录", "ok");
+    await refreshDataDirInfo();
+    $("#btnRestartApp")?.classList.remove("hidden");
+  } catch {
+    showDataDirMessage("无法连接本地服务", "err");
+  }
+}
+
+function restartAppForDataDir() {
+  if (window.desktopApi?.restartApp) {
+    window.desktopApi.restartApp();
+    return;
+  }
+  showDataDirMessage("请手动关闭并重新启动本软件", "info");
+}
+
+function formatUpdateBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderAppVersionText() {
+  const el = $("#appVersionText");
+  if (!el) return;
+  el.textContent = desktopUpdateState.currentVersion
+    ? `当前版本：v${desktopUpdateState.currentVersion}`
+    : "当前版本：未知";
+}
+
+function showUpdateSettingsMessage(msg, type) {
+  const el = $("#appUpdateSettingsMessage");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function setUpdateModalMessage(msg, type) {
+  const el = $("#updateModalMessage");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function shouldPromptForUpdate(version) {
+  if (!version) return false;
+  return localStorage.getItem(SKIPPED_UPDATE_VERSION_KEY) !== version;
+}
+
+function openUpdateModal(info = {}) {
+  const version = info.version || desktopUpdateState.availableVersion || "";
+  desktopUpdateState.availableVersion = version;
+  if ($("#updateModalTitle")) {
+    $("#updateModalTitle").textContent = version ? `发现新版本 v${version}` : "发现新版本";
+  }
+  if ($("#updateModalVersion")) {
+    const current = desktopUpdateState.currentVersion ? `v${desktopUpdateState.currentVersion}` : "当前版本";
+    $("#updateModalVersion").textContent = version
+      ? `${current} → v${version}`
+      : "有新版本可供安装";
+  }
+  const notesEl = $("#updateModalNotes");
+  if (notesEl) {
+    const notes = String(info.releaseNotes || "").trim();
+    notesEl.textContent = notes || "建议更新到最新版以获得修复与功能改进。";
+    notesEl.classList.toggle("hidden", !notesEl.textContent);
+  }
+  $("#updateProgressWrap")?.classList.add("hidden");
+  $("#btnUpdateInstall")?.classList.add("hidden");
+  $("#btnUpdateDownload")?.classList.remove("hidden");
+  $("#btnUpdateLater")?.classList.remove("hidden");
+  setUpdateModalMessage("", "");
+  openAppModal("updateModal");
+}
+
+function showUpdateProgress(payload = {}) {
+  $("#updateProgressWrap")?.classList.remove("hidden");
+  $("#btnUpdateDownload")?.classList.add("hidden");
+  $("#btnUpdateLater")?.classList.add("hidden");
+  const percent = Math.max(0, Math.min(100, Number(payload.percent) || 0));
+  if ($("#updateProgressFill")) $("#updateProgressFill").style.width = `${percent.toFixed(1)}%`;
+  if ($("#updateProgressText")) {
+    const transferred = formatUpdateBytes(payload.transferred);
+    const total = formatUpdateBytes(payload.total);
+    $("#updateProgressText").textContent = `正在下载更新… ${percent.toFixed(1)}%（${transferred} / ${total}）`;
+  }
+  setUpdateModalMessage("", "");
+  if (!$("#updateModal")?.open) openAppModal("updateModal");
+}
+
+function showUpdateDownloaded(info = {}) {
+  const version = info.version || desktopUpdateState.availableVersion || "";
+  $("#updateProgressWrap")?.classList.add("hidden");
+  $("#btnUpdateDownload")?.classList.add("hidden");
+  $("#btnUpdateLater")?.classList.add("hidden");
+  $("#btnUpdateInstall")?.classList.remove("hidden");
+  setUpdateModalMessage(`v${version || "新版本"} 已下载完成，重启后将自动安装。`, "ok");
+  if (!$("#updateModal")?.open) openAppModal("updateModal");
+  showUpdateSettingsMessage("更新包已下载，可点击「重启并安装」", "ok");
+}
+
+function dismissUpdateModal(rememberSkip = false) {
+  if (rememberSkip && desktopUpdateState.availableVersion) {
+    localStorage.setItem(SKIPPED_UPDATE_VERSION_KEY, desktopUpdateState.availableVersion);
+  }
+  $("#updateModal")?.close();
+}
+
+function handleDesktopUpdateStatus(payload = {}) {
+  const phase = payload.phase;
+  if (phase === "checking") {
+    showUpdateSettingsMessage("正在检查更新…", "info");
+    return;
+  }
+  if (phase === "not-available") {
+    manualUpdateCheckPending = false;
+    showUpdateSettingsMessage("当前已是最新版本", "ok");
+    return;
+  }
+  if (phase === "error") {
+    manualUpdateCheckPending = false;
+    const msg = payload.message || "检查更新失败";
+    showUpdateSettingsMessage(msg, "err");
+    setUpdateModalMessage(msg, "err");
+    return;
+  }
+  if (phase === "available") {
+    desktopUpdateState.availableVersion = payload.info?.version || "";
+    showUpdateSettingsMessage(`发现新版本 v${desktopUpdateState.availableVersion}`, "ok");
+    if (manualUpdateCheckPending || shouldPromptForUpdate(desktopUpdateState.availableVersion)) {
+      openUpdateModal(payload.info || {});
+    }
+    manualUpdateCheckPending = false;
+    return;
+  }
+  if (phase === "progress") {
+    showUpdateProgress(payload);
+    return;
+  }
+  if (phase === "downloaded") {
+    manualUpdateCheckPending = false;
+    showUpdateDownloaded(payload.info || {});
+  }
+}
+
+async function manualCheckForUpdates() {
+  if (!window.desktopApi?.checkForUpdates) {
+    showUpdateSettingsMessage("仅桌面安装版支持自动更新", "info");
+    return;
+  }
+  manualUpdateCheckPending = true;
+  showUpdateSettingsMessage("正在检查更新…", "info");
+  try {
+    const result = await window.desktopApi.checkForUpdates();
+    if (result?.reason === "dev") {
+      manualUpdateCheckPending = false;
+      showUpdateSettingsMessage("开发模式不支持自动更新", "info");
+    }
+  } catch (err) {
+    manualUpdateCheckPending = false;
+    showUpdateSettingsMessage(err.message || "检查更新失败", "err");
+  }
+}
+
+async function startUpdateDownload() {
+  if (!window.desktopApi?.downloadUpdate) return;
+  setUpdateModalMessage("正在准备下载…", "info");
+  try {
+    await window.desktopApi.downloadUpdate();
+  } catch (err) {
+    setUpdateModalMessage(err.message || "下载失败", "err");
+  }
+}
+
+function installDownloadedUpdate() {
+  if (!window.desktopApi?.installUpdate) return;
+  window.desktopApi.installUpdate();
+}
+
+function initDesktopUpdater() {
+  const panel = $("#appUpdatePanel");
+  if (!window.desktopApi?.isDesktop) {
+    panel?.classList.add("hidden");
+    return;
+  }
+  window.desktopApi
+    .getAppVersion()
+    .then((info) => {
+      desktopUpdateState.currentVersion = info?.version || "";
+      renderAppVersionText();
+    })
+    .catch(() => renderAppVersionText());
+  window.desktopApi.onUpdateStatus?.(handleDesktopUpdateStatus);
+}
+
 async function testNetwork() {
   const proxyConfig = collectProxyFromUI("global");
-  showProxyMessage("正在测试网络...", "info");
+  const useSavedProxyPassword = !Object.prototype.hasOwnProperty.call(proxyConfig, "password");
+  showProxyMessage(
+    ["http", "https", "socks5", "ssh"].includes(proxyConfig.type)
+      ? useSavedProxyPassword
+        ? "正在用已保存的代理密码快速检测…"
+        : "正在快速检测代理出网…"
+      : "正在测试网络…",
+    "info",
+  );
   try {
     const res = await fetch("/api/config/network-test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proxyConfig }),
+      body: JSON.stringify({
+        proxyConfig,
+        useSavedProxyPassword: Boolean(useSavedProxyPassword),
+      }),
     });
     const data = await res.json();
-    showProxyMessage(res.ok ? data.message : data.error || "网络测试失败", res.ok ? "ok" : "err");
+    const switched = maybeApplyProbeProxyType("global", data, proxyConfig.type);
+    let msg = data.message || data.error || "网络测试失败";
+    if (switched) {
+      msg = `${msg}（「代理方式」已自动切换为 ${String(data.suggestedProxyType).toUpperCase()}）`;
+    }
+    showProxyMessage(msg, data.ok ? "ok" : "err");
   } catch {
     showProxyMessage("无法连接本地服务", "err");
   }
@@ -1970,8 +2718,12 @@ let aiUiOptions = {
   marketSentimentOptions: DEFAULT_SENTIMENT_OPTIONS,
   availableTokens: DEFAULT_AVAILABLE_TOKENS,
 };
+/** @type {Array<{id:string,name:string,sampleText:string,createdAt?:number}>} */
+let aiStyleReferencesCache = [];
 /** @type {Set<string>} */
 let aiHostedExpanded = new Set();
+/** 完整托管账号列表缓存（搜索筛选时仍保留未显示行） */
+let aiHostedAccountsCache = [];
 /** @type {Array<{id:string,label:string,models:Array<{id:string,label:string}>,keyHint:string,keyUrl:string,defaultModel:string,allowCustomBaseUrl?:boolean,allowCustomModel?:boolean}>} */
 let aiProvidersCache = [];
 let aiProfilesCache = [];
@@ -2028,7 +2780,7 @@ function normalizeAiProfilesFromConfig(data = {}) {
 function buildHostedAccountsFallback(data = {}) {
   if (!accountStore.accounts.length) return [];
   const defaultId = data.accountId || getDefaultAccountId();
-  return accountStore.accounts.map((acc) => ({
+  return sortAccountsNewestFirst(accountStore.accounts).map((acc) => ({
     accountId: acc.id,
     accountName: acc.name,
     isDefault: acc.isDefault,
@@ -2038,21 +2790,39 @@ function buildHostedAccountsFallback(data = {}) {
     customTokens: data.customTokens || [],
     marketSentiment: data.marketSentiment || "auto",
     contentStyles: data.contentStyles || ["casual"],
+    articleCount: 0,
+    viewCount: 0,
+    likeCount: 0,
+    commentCount: 0,
+    commission: null,
+    createdAt: acc.createdAt || null,
   }));
+}
+
+function sortAccountsNewestFirst(accounts = []) {
+  return [...accounts].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
 function normalizeHostedAccountsFromConfig(data = {}) {
   const hosted = data.hostedAccounts;
   if (Array.isArray(hosted) && hosted.length) {
-    if (!accountStore.accounts.length) return hosted;
+    if (!accountStore.accounts.length) {
+      return [...hosted].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    }
     const map = new Map(hosted.map((item) => [item.accountId, item]));
-    return accountStore.accounts.map((acc) => {
+    return sortAccountsNewestFirst(accountStore.accounts).map((acc) => {
       const existing = map.get(acc.id);
       if (existing) {
         return {
           ...existing,
           accountName: existing.accountName || acc.name,
           isDefault: existing.isDefault ?? Boolean(acc.isDefault),
+          createdAt: existing.createdAt || acc.createdAt || null,
+          articleCount: existing.articleCount ?? 0,
+          viewCount: existing.viewCount ?? 0,
+          likeCount: existing.likeCount ?? 0,
+          commentCount: existing.commentCount ?? 0,
+          commission: existing.commission ?? null,
         };
       }
       return {
@@ -2065,6 +2835,12 @@ function normalizeHostedAccountsFromConfig(data = {}) {
         customTokens: [],
         marketSentiment: "auto",
         contentStyles: ["casual"],
+        articleCount: 0,
+        viewCount: 0,
+        likeCount: 0,
+        commentCount: 0,
+        commission: null,
+        createdAt: acc.createdAt || null,
       };
     });
   }
@@ -2602,14 +3378,26 @@ async function applyAiConfigToUI(data) {
     $("#aiModelSelect").value = data.model || provider?.defaultModel || "glm-4-flash";
   }
 
-  $("#aiEnabled").checked = Boolean(data.enabled);
-  $("#aiTopicInput").value = data.topic || "";
-  $("#aiTopicsInput").value = (data.topics || []).join("\n");
-  $("#aiIntervalInput").value = data.intervalMinutes || 60;
-  $("#aiPostsPerRunInput").value = data.postsPerRun || 1;
-  $("#aiMaxPerDayInput").value = data.maxPostsPerDay || 10;
-  $("#aiAutoPublish").checked = data.autoPublish !== false;
+  if ($("#aiEnabled")) $("#aiEnabled").checked = Boolean(data.enabled);
+  if ($("#aiIntervalInput")) $("#aiIntervalInput").value = data.intervalMinutes || 60;
+  if ($("#aiPostsPerRunInput")) $("#aiPostsPerRunInput").value = data.postsPerRun || 1;
+  if ($("#aiMaxPerDayInput")) $("#aiMaxPerDayInput").value = data.maxPostsPerDay || 10;
+  if ($("#aiPublishDelayMinInput")) {
+    $("#aiPublishDelayMinInput").value =
+      data.publishDelayMinSeconds ?? data.publishIntervalSeconds ?? 3;
+  }
+  if ($("#aiPublishDelayMaxInput")) {
+    $("#aiPublishDelayMaxInput").value =
+      data.publishDelayMaxSeconds ?? data.publishIntervalSeconds ?? 8;
+  }
+  if ($("#aiAutoPublish")) $("#aiAutoPublish").checked = data.autoPublish !== false;
+  if ($("#aiAttachImages")) $("#aiAttachImages").checked = data.attachRelatedImages !== false;
+  if ($("#aiPreventDuplicate")) {
+    $("#aiPreventDuplicate").checked = data.preventDuplicatePosts !== false;
+  }
   $("#aiUseNews").checked = data.useNews !== false;
+  aiStyleReferencesCache = Array.isArray(data.styleReferences) ? data.styleReferences : [];
+  renderAiStyleReferencesList();
 
   aiUiOptions = {
     contentStyleOptions: data.contentStyleOptions?.length ? data.contentStyleOptions : DEFAULT_CONTENT_STYLE_OPTIONS,
@@ -2617,22 +3405,78 @@ async function applyAiConfigToUI(data) {
     availableTokens: data.availableTokens?.length ? data.availableTokens : DEFAULT_AVAILABLE_TOKENS,
   };
   renderHostedAccountsList(data);
-  renderAiStatus(data);
+  if ($("#aiStatusText")) renderAiStatus(data);
 }
 
-function formatHostedAccountSummary(host) {
-  const aiName = getAiProfileName(host.aiProfileId);
-  const tokens = host.selectedTokens?.length
-    ? host.selectedTokens.slice(0, 3).map((s) => `$${s}`).join("、")
-    : "自动轮换";
-  const sentiment =
-    host.marketSentiment === "bullish" ? "看多" : host.marketSentiment === "bearish" ? "看空" : "自动";
+function formatHostedStyleLabel(host) {
   const styles = (host.contentStyles || [])
     .map((id) => aiUiOptions.contentStyleOptions.find((item) => item.id === id)?.label || id)
-    .filter(Boolean)
-    .slice(0, 2)
-    .join("、") || "口语化分享";
-  return `${aiName} · ${tokens} · ${sentiment} · ${styles}`;
+    .filter(Boolean);
+  if (!styles.length) return "口语化分享";
+  return styles.length > 2 ? `${styles.slice(0, 2).join("、")}…` : styles.join("、");
+}
+
+function formatHostedSentimentLabel(sentiment) {
+  if (sentiment === "bullish") return "看多";
+  if (sentiment === "bearish") return "看空";
+  return "自动";
+}
+
+function formatMetric(value) {
+  if (value == null || value === "") return "—";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "—";
+  return num.toLocaleString("zh-CN");
+}
+
+function formatCommission(value) {
+  if (value == null || value === "") return "—";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "—";
+  return num.toFixed(2);
+}
+
+function renderHostedSummary(hosted = []) {
+  const el = $("#aiHostedSummary");
+  if (!el) return;
+  const enabled = hosted.filter((item) => item.enabled).length;
+  const articles = hosted.reduce((sum, item) => sum + (Number(item.articleCount) || 0), 0);
+  const views = hosted.reduce((sum, item) => sum + (Number(item.viewCount) || 0), 0);
+  el.innerHTML = `
+    <div class="ai-hosted-stat"><div class="k">账号数</div><div class="v">${hosted.length}</div></div>
+    <div class="ai-hosted-stat"><div class="k">已启用托管</div><div class="v">${enabled}</div></div>
+    <div class="ai-hosted-stat"><div class="k">文章数量</div><div class="v">${formatMetric(articles)}</div></div>
+    <div class="ai-hosted-stat"><div class="k">总浏览量</div><div class="v">${formatMetric(views)}</div></div>
+  `;
+}
+
+function getHostedSearchQuery() {
+  return ($("#aiHostedSearchInput")?.value || "").trim().toLowerCase();
+}
+
+function buildHostedStyleSelectOptions(selectedStyles = ["casual"]) {
+  const selected = selectedStyles?.[0] || "casual";
+  const list = aiUiOptions.contentStyleOptions?.length
+    ? aiUiOptions.contentStyleOptions
+    : DEFAULT_CONTENT_STYLE_OPTIONS;
+  return list
+    .map(
+      (opt) =>
+        `<option value="${escapeHtml(opt.id)}" ${opt.id === selected ? "selected" : ""}>${escapeHtml(opt.label)}</option>`,
+    )
+    .join("");
+}
+
+function buildHostedSentimentSelectOptions(selected = "auto") {
+  const list = aiUiOptions.marketSentimentOptions?.length
+    ? aiUiOptions.marketSentimentOptions
+    : DEFAULT_SENTIMENT_OPTIONS;
+  return list
+    .map(
+      (opt) =>
+        `<option value="${escapeHtml(opt.id)}" ${opt.id === selected ? "selected" : ""}>${escapeHtml(opt.label)}</option>`,
+    )
+    .join("");
 }
 
 function renderHostedAccountsList(data) {
@@ -2640,95 +3484,143 @@ function renderHostedAccountsList(data) {
   if (!container) return;
 
   data = normalizeAiConfigResponse(data || {});
-  const hosted = data.hostedAccounts || [];
-  if (!accountStore.accounts.length && !hosted.length) {
+  const hostedAll = sortAccountsNewestFirst(data.hostedAccounts || []);
+  aiHostedAccountsCache = hostedAll;
+  renderHostedSummary(hostedAll);
+
+  if (!accountStore.accounts.length && !hostedAll.length) {
     container.innerHTML = `<div class="account-empty">请先在「账号管理」中添加账号</div>`;
     return;
   }
 
-  if (!hosted.length) {
+  if (!hostedAll.length) {
     container.innerHTML = `<div class="account-empty">暂无账号，请先在「账号管理」中添加</div>`;
     return;
   }
 
-  container.innerHTML = hosted
-    .map((host) => {
-      const id = host.accountId;
-      const expanded = aiHostedExpanded.has(id);
-      return `
-      <div class="ai-hosted-account-card ${host.enabled ? "is-enabled" : ""}" data-account-id="${id}">
-        <div class="ai-hosted-account-head">
-          <label class="select-all-label">
-            <input type="checkbox" class="ai-host-enabled" data-account-id="${id}" ${host.enabled ? "checked" : ""} />
-            <strong>${escapeHtml(host.accountName || getAccountName(id))}</strong>
-            ${host.isDefault ? '<span class="badge badge-green account-default-badge">默认</span>' : ""}
-          </label>
-          <span class="ai-hosted-account-summary">${escapeHtml(formatHostedAccountSummary(host))}</span>
-          <button type="button" class="btn btn-ghost btn-sm ai-host-toggle-config" data-account-id="${id}">
-            ${expanded ? "收起" : "配置"}
-          </button>
-        </div>
-        <div class="ai-hosted-account-body ${expanded ? "is-open" : ""}" id="aiHostBody-${id}">
-          <div class="ai-hosted-config-block ai-host-profile-field">
-            <span class="ai-hosted-config-label">使用 AI</span>
-            <p class="hint">不选则使用默认 AI；可在「API 管理」中添加多个 AI</p>
-            <select class="ai-host-profile-select account-select" data-account-id="${id}">
-              ${buildAiProfileSelectOptions(host.aiProfileId)}
-            </select>
-          </div>
-          <div class="ai-hosted-config-block">
-            <span class="ai-hosted-config-label">目标代币</span>
-            <p class="hint">不选则根据新闻自动轮换主流币</p>
-            <div class="token-picker ai-host-token-picker" data-account-id="${id}"></div>
-            <div class="token-custom-add">
-              <input type="text" class="ai-host-custom-token-input" data-account-id="${id}" placeholder="自定义代币，如 PEPE" maxlength="10" autocomplete="off" />
-              <button type="button" class="btn btn-secondary btn-sm ai-host-add-token" data-account-id="${id}">添加</button>
-            </div>
-          </div>
-          <div class="ai-hosted-config-block">
-            <span class="ai-hosted-config-label">观点倾向</span>
-            <div class="sentiment-picker ai-host-sentiment-picker" data-account-id="${id}"></div>
-          </div>
-          <div class="ai-hosted-config-block">
-            <span class="ai-hosted-config-label">文案风格</span>
-            <div class="content-style-grid ai-host-content-styles" data-account-id="${id}"></div>
-          </div>
-        </div>
-      </div>`;
-    })
-    .join("");
+  const q = getHostedSearchQuery();
+  const hosted = q
+    ? hostedAll.filter((host) => String(host.accountName || getAccountName(host.accountId)).toLowerCase().includes(q))
+    : hostedAll;
+
+  if (!hosted.length) {
+    container.innerHTML = `<div class="account-empty">未找到匹配账号</div>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="ai-report-wrap">
+      <table class="ai-report-table">
+        <thead>
+          <tr>
+            <th>序号</th>
+            <th>托管</th>
+            <th>账号</th>
+            <th>风格</th>
+            <th>AI</th>
+            <th>观点</th>
+            <th>文章数</th>
+            <th>浏览量</th>
+            <th>点赞</th>
+            <th>评论</th>
+            <th>佣金</th>
+            <th>状态</th>
+            <th class="col-actions">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${hosted
+            .map((host, index) => {
+              const id = host.accountId;
+              const expanded = aiHostedExpanded.has(id);
+              const name = host.accountName || getAccountName(id);
+              return `
+              <tr class="ai-hosted-account-card ${host.enabled ? "is-enabled" : ""}" data-account-id="${id}">
+                <td class="num muted">${index + 1}</td>
+                <td>
+                  <input type="checkbox" class="ai-host-enabled" data-account-id="${id}" ${host.enabled ? "checked" : ""} title="启用托管" />
+                </td>
+                <td>
+                  <strong>${escapeHtml(name)}</strong>
+                  ${host.isDefault ? '<span class="badge badge-green account-default-badge">默认</span>' : ""}
+                </td>
+                <td>
+                  <select class="ai-inline-select ai-host-style-select" data-account-id="${id}" title="文案风格">
+                    ${buildHostedStyleSelectOptions(host.contentStyles || ["casual"])}
+                  </select>
+                </td>
+                <td>
+                  <select class="ai-inline-select ai-host-profile-select" data-account-id="${id}" title="使用 AI">
+                    ${buildAiProfileSelectOptions(host.aiProfileId)}
+                  </select>
+                </td>
+                <td>
+                  <select class="ai-inline-select ai-host-sentiment-select" data-account-id="${id}" title="观点倾向">
+                    ${buildHostedSentimentSelectOptions(host.marketSentiment || "auto")}
+                  </select>
+                </td>
+                <td class="num">${formatMetric(host.articleCount)}</td>
+                <td class="num">${formatMetric(host.viewCount)}</td>
+                <td class="num">${formatMetric(host.likeCount)}</td>
+                <td class="num">${formatMetric(host.commentCount)}</td>
+                <td class="num muted" title="广场暂无统一佣金接口">${formatCommission(host.commission)}</td>
+                <td class="ai-host-status-cell">${host.enabled ? '<span class="badge badge-green">托管中</span>' : '<span class="muted">未启用</span>'}</td>
+                <td class="col-actions">
+                  <button type="button" class="btn btn-ghost btn-sm ai-host-toggle-config" data-account-id="${id}">
+                    ${expanded ? "收起代币" : "代币"}
+                  </button>
+                </td>
+              </tr>
+              <tr class="ai-hosted-config-row" data-account-id="${id}">
+                <td colspan="13">
+                  <div class="ai-hosted-account-body ${expanded ? "is-open" : ""}" id="aiHostBody-${id}">
+                    <div class="ai-hosted-config-block">
+                      <span class="ai-hosted-config-label">目标代币</span>
+                      <p class="hint">不选则根据新闻自动轮换主流币。风格 / AI / 观点已可在上表直接修改。</p>
+                      <div class="token-picker ai-host-token-picker" data-account-id="${id}"></div>
+                      <div class="token-custom-add">
+                        <input type="text" class="ai-host-custom-token-input" data-account-id="${id}" placeholder="自定义代币，如 PEPE" maxlength="10" autocomplete="off" />
+                        <button type="button" class="btn btn-secondary btn-sm ai-host-add-token" data-account-id="${id}">添加</button>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+              </tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </div>`;
 
   hosted.forEach((host) => {
     const id = host.accountId;
     aiHostedCustomTokens[id] = [...(host.customTokens || [])];
-    const profileSelect = container.querySelector(`.ai-host-profile-select[data-account-id="${id}"]`);
-    profileSelect?.addEventListener("change", () => updateHostedAccountSummary(id));
     renderTokenPickerIn(
       container.querySelector(`.ai-host-token-picker[data-account-id="${id}"]`),
       aiUiOptions.availableTokens,
       host.selectedTokens || [],
       aiHostedCustomTokens[id],
-      { onUpdate: () => updateHostedAccountSummary(id) },
-    );
-    renderSentimentPickerIn(
-      container.querySelector(`.ai-host-sentiment-picker[data-account-id="${id}"]`),
-      aiUiOptions.marketSentimentOptions,
-      host.marketSentiment || "auto",
-      id,
-    );
-    renderContentStyleOptionsIn(
-      container.querySelector(`.ai-host-content-styles[data-account-id="${id}"]`),
-      aiUiOptions.contentStyleOptions,
-      host.contentStyles || ["casual"],
-      id,
+      { onUpdate: () => syncVisibleHostedRowsIntoCache() },
     );
   });
 
   container.querySelectorAll(".ai-host-enabled").forEach((input) => {
     input.addEventListener("change", () => {
-      const card = input.closest(".ai-hosted-account-card");
-      card?.classList.toggle("is-enabled", input.checked);
+      const row = input.closest("tr.ai-hosted-account-card");
+      row?.classList.toggle("is-enabled", input.checked);
+      const statusCell = row?.querySelector(".ai-host-status-cell");
+      if (statusCell) {
+        statusCell.innerHTML = input.checked
+          ? '<span class="badge badge-green">托管中</span>'
+          : '<span class="muted">未启用</span>';
+      }
+      syncVisibleHostedRowsIntoCache();
+      renderHostedSummary(aiHostedAccountsCache);
     });
+  });
+
+  container.querySelectorAll(".ai-host-style-select, .ai-host-profile-select, .ai-host-sentiment-select").forEach((select) => {
+    select.addEventListener("change", () => syncVisibleHostedRowsIntoCache());
   });
 
   container.querySelectorAll(".ai-host-toggle-config").forEach((btn) => {
@@ -2738,9 +3630,16 @@ function renderHostedAccountsList(data) {
       if (!body) return;
       const open = !body.classList.contains("is-open");
       body.classList.toggle("is-open", open);
-      btn.textContent = open ? "收起" : "配置";
-      if (open) aiHostedExpanded.add(id);
-      else aiHostedExpanded.delete(id);
+      btn.textContent = open ? "收起代币" : "代币";
+      if (open) {
+        aiHostedExpanded.add(id);
+        // 展开后滚到可视区，确保全部芯片可见
+        requestAnimationFrame(() => {
+          body.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+      } else {
+        aiHostedExpanded.delete(id);
+      }
     });
   });
 
@@ -2756,45 +3655,71 @@ function renderHostedAccountsList(data) {
       }
     });
   });
+
+  const searchInput = $("#aiHostedSearchInput");
+  if (searchInput && !searchInput.dataset.bound) {
+    searchInput.dataset.bound = "1";
+    searchInput.addEventListener("input", () => {
+      syncVisibleHostedRowsIntoCache();
+      renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
+    });
+  }
 }
 
-function updateHostedAccountSummary(accountId) {
-  const card = document.querySelector(`.ai-hosted-account-card[data-account-id="${accountId}"]`);
-  if (!card) return;
-  const summaryEl = card.querySelector(".ai-hosted-account-summary");
-  if (!summaryEl) return;
-  const config = collectHostedAccountFromCard(card);
-  summaryEl.textContent = formatHostedAccountSummary(config);
+function syncVisibleHostedRowsIntoCache() {
+  const visible = [...$$("tr.ai-hosted-account-card")].map((card) => collectHostedAccountFromCard(card));
+  if (!visible.length) return;
+  const map = new Map(aiHostedAccountsCache.map((item) => [item.accountId, item]));
+  for (const item of visible) {
+    const prev = map.get(item.accountId) || {};
+    map.set(item.accountId, {
+      ...prev,
+      ...item,
+      accountName: prev.accountName || getAccountName(item.accountId),
+    });
+  }
+  aiHostedAccountsCache = sortAccountsNewestFirst([...map.values()]);
 }
 
 function collectHostedAccountFromCard(card) {
   const accountId = card.dataset.accountId;
-  const tokenPicker = card.querySelector(".ai-host-token-picker");
-  const sentiment = card.querySelector(`input[name="aiMarketSentiment-${accountId}"]:checked`);
-  const contentStyles = [...card.querySelectorAll(`input[name="aiContentStyle-${accountId}"]:checked`)].map(
-    (el) => el.value,
-  );
+  const configRow = document.querySelector(`tr.ai-hosted-config-row[data-account-id="${accountId}"]`);
+  const tokenPicker = configRow?.querySelector(".ai-host-token-picker");
+  const styleSelect = card.querySelector(".ai-host-style-select");
+  const profileSelect = card.querySelector(".ai-host-profile-select");
+  const sentimentSelect = card.querySelector(".ai-host-sentiment-select");
+  const styleId = styleSelect?.value || "casual";
   return {
     accountId,
     enabled: card.querySelector(".ai-host-enabled")?.checked || false,
-    aiProfileId: card.querySelector(".ai-host-profile-select")?.value || null,
+    aiProfileId: profileSelect?.value || null,
     selectedTokens: collectSelectedTokensFromContainer(tokenPicker),
     customTokens: aiHostedCustomTokens[accountId] || [],
-    marketSentiment: sentiment?.value || "auto",
-    contentStyles: contentStyles.length ? contentStyles : ["casual"],
+    marketSentiment: sentimentSelect?.value || "auto",
+    contentStyles: styleId ? [styleId] : ["casual"],
   };
 }
 
 function collectHostedAccountsFromUI() {
-  const fromCards = [...$$(".ai-hosted-account-card")].map((card) => collectHostedAccountFromCard(card));
-  if (fromCards.length) return fromCards;
+  syncVisibleHostedRowsIntoCache();
+  if (aiHostedAccountsCache.length) {
+    return aiHostedAccountsCache.map((item) => ({
+      accountId: item.accountId,
+      enabled: Boolean(item.enabled),
+      aiProfileId: item.aiProfileId || null,
+      selectedTokens: item.selectedTokens || [],
+      customTokens: item.customTokens || [],
+      marketSentiment: item.marketSentiment || "auto",
+      contentStyles: item.contentStyles?.length ? item.contentStyles : ["casual"],
+    }));
+  }
   return normalizeHostedAccountsFromConfig({});
 }
 
 function addHostedCustomToken(accountId) {
   const input = document.querySelector(`.ai-host-custom-token-input[data-account-id="${accountId}"]`);
-  const card = document.querySelector(`.ai-hosted-account-card[data-account-id="${accountId}"]`);
-  const tokenPicker = card?.querySelector(".ai-host-token-picker");
+  const configRow = document.querySelector(`tr.ai-hosted-config-row[data-account-id="${accountId}"]`);
+  const tokenPicker = configRow?.querySelector(".ai-host-token-picker");
   if (!input || !tokenPicker) return;
 
   const symbol = parseTokenSymbol(input.value);
@@ -2809,10 +3734,10 @@ function addHostedCustomToken(accountId) {
   const selected = collectSelectedTokensFromContainer(tokenPicker);
   if (!selected.includes(symbol)) selected.push(symbol);
   renderTokenPickerIn(tokenPicker, aiUiOptions.availableTokens, selected, aiHostedCustomTokens[accountId], {
-    onUpdate: () => updateHostedAccountSummary(accountId),
+    onUpdate: () => syncVisibleHostedRowsIntoCache(),
   });
   input.value = "";
-  updateHostedAccountSummary(accountId);
+  syncVisibleHostedRowsIntoCache();
 }
 
 function updateTokenSummary() {
@@ -2875,7 +3800,9 @@ function renderTokenPickerIn(container, presetTokens = [], selected = [], custom
       e.preventDefault();
       e.stopPropagation();
       const symbol = parseTokenSymbol(btn.dataset.token);
-      const accountId = container.closest(".ai-hosted-account-card")?.dataset.accountId;
+      const accountId =
+        container.dataset.accountId ||
+        container.closest("[data-account-id]")?.dataset.accountId;
       if (accountId && aiHostedCustomTokens[accountId]) {
         aiHostedCustomTokens[accountId] = aiHostedCustomTokens[accountId].filter((item) => item !== symbol);
       }
@@ -2975,7 +3902,7 @@ function renderSentimentPickerIn(container, options = [], selected = "auto", acc
     )
     .join("");
   container.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
-    input.addEventListener("change", () => updateHostedAccountSummary(accountId));
+    input.addEventListener("change", () => syncVisibleHostedRowsIntoCache());
   });
 }
 
@@ -3002,7 +3929,7 @@ function renderContentStyleOptionsIn(container, options, selected = ["casual"], 
     )
     .join("");
   container.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
-    input.addEventListener("change", () => updateHostedAccountSummary(accountId));
+    input.addEventListener("change", () => syncVisibleHostedRowsIntoCache());
   });
 }
 
@@ -3117,28 +4044,278 @@ async function loadAiConfig() {
   }
 }
 
-function collectAiConfigFromUI() {
+function setAiStyleRefMessage(text, type = "") {
+  const el = $("#aiStyleRefMessage");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = `message${type ? ` ${type}` : ""}`;
+}
+
+function showAiSettingsMessage(msg, type) {
+  const el = $("#aiSettingsMessage");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function collectAiProviderSettingsFromUI() {
+  const out = { styleReferences: aiStyleReferencesCache };
+  if ($("#aiProviderSelect")) out.provider = $("#aiProviderSelect").value || "zhipu";
+  if ($("#aiBaseUrlInput")) out.baseUrl = $("#aiBaseUrlInput").value.trim() || "";
+  if ($("#aiApiKeyInput")) {
+    const key = $("#aiApiKeyInput").value.trim();
+    if (key) out.apiKey = key;
+  }
+  if ($("#aiModelSelect") || $("#aiCustomModelInput")) {
+    out.model = getSelectedAiModelFromUI();
+  }
+  if ($("#aiUseNews")) out.useNews = $("#aiUseNews").checked;
+  return out;
+}
+
+function collectAiHostingSettingsFromUI() {
   const hostedAccounts = collectHostedAccountsFromUI();
   const firstEnabled = hostedAccounts.find((item) => item.enabled);
-  return {
-    enabled: $("#aiEnabled").checked,
-    provider: $("#aiProviderSelect")?.value || "zhipu",
-    baseUrl: $("#aiBaseUrlInput")?.value.trim() || "",
-    apiKey: $("#aiApiKeyInput").value.trim(),
-    model: getSelectedAiModelFromUI(),
-    topic: $("#aiTopicInput").value.trim(),
-    topics: $("#aiTopicsInput").value
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean),
-    hostedAccounts,
-    accountId: firstEnabled?.accountId || getDefaultAccountId(),
-    intervalMinutes: parseInt($("#aiIntervalInput").value, 10) || 60,
-    postsPerRun: parseInt($("#aiPostsPerRunInput").value, 10) || 1,
-    maxPostsPerDay: parseInt($("#aiMaxPerDayInput").value, 10) || 10,
-    autoPublish: $("#aiAutoPublish").checked,
-    useNews: $("#aiUseNews").checked,
+  const out = {};
+  if ($("#aiEnabled")) out.enabled = $("#aiEnabled").checked;
+  if (hostedAccounts.length || $("#aiHostedAccountsList")) {
+    out.hostedAccounts = hostedAccounts;
+    out.accountId = firstEnabled?.accountId || getDefaultAccountId();
+  }
+  if ($("#aiIntervalInput")) out.intervalMinutes = parseInt($("#aiIntervalInput").value, 10) || 60;
+  if ($("#aiPostsPerRunInput")) out.postsPerRun = parseInt($("#aiPostsPerRunInput").value, 10) || 1;
+  if ($("#aiMaxPerDayInput")) out.maxPostsPerDay = parseInt($("#aiMaxPerDayInput").value, 10) || 10;
+  if ($("#aiPublishDelayMinInput")) {
+    out.publishDelayMinSeconds = parseInt($("#aiPublishDelayMinInput").value, 10) || 3;
+  }
+  if ($("#aiPublishDelayMaxInput")) {
+    out.publishDelayMaxSeconds = parseInt($("#aiPublishDelayMaxInput").value, 10) || out.publishDelayMinSeconds || 3;
+  }
+  if ($("#aiAutoPublish")) out.autoPublish = $("#aiAutoPublish").checked;
+  if ($("#aiAttachImages")) out.attachRelatedImages = $("#aiAttachImages").checked;
+  if ($("#aiPreventDuplicate")) out.preventDuplicatePosts = $("#aiPreventDuplicate").checked;
+  return out;
+}
+
+function buildStyleOptionsFromReferences(refs = aiStyleReferencesCache) {
+  return [
+    ...DEFAULT_CONTENT_STYLE_OPTIONS,
+    ...(refs || []).map((item) => ({
+      id: `ref:${item.id}`,
+      label: `参考·${item.name}`,
+      hint: "模仿上传范文",
+    })),
+  ];
+}
+
+function renderAiStyleReferencesList() {
+  const el = $("#aiStyleRefList");
+  if (!el) return;
+  if (!aiStyleReferencesCache.length) {
+    el.innerHTML =
+      `<div class="hint">暂无自定义风格。添加后可在「AI 托管」页账号的「风格」中选择「参考·xxx」。</div>`;
+    return;
+  }
+  el.innerHTML = aiStyleReferencesCache
+    .map((item) => {
+      const preview = String(item.sampleText || "").replace(/\s+/g, " ").slice(0, 120);
+      return `
+        <div class="ai-style-ref-item" data-id="${escapeHtml(item.id)}">
+          <div>
+            <strong>${escapeHtml(item.name)}</strong>
+            <div class="preview">${escapeHtml(preview)}${(item.sampleText || "").length > 120 ? "…" : ""}</div>
+          </div>
+          <div class="ai-style-ref-item-actions">
+            <button type="button" class="btn btn-ghost btn-sm" data-action="preview-style-ref">预览</button>
+            <button type="button" class="btn btn-ghost btn-sm btn-danger" data-action="delete-style-ref">删除</button>
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+async function previewAiStyleReference(sampleTextOverride, label = "") {
+  const sampleText = String(sampleTextOverride ?? $("#aiStyleRefTextInput")?.value ?? "").trim();
+  if (sampleText.length < 20) {
+    setAiStyleRefMessage("参考文章至少 20 字才能预览", "err");
+    return;
+  }
+  const btn = $("#btnPreviewAiStyleRef");
+  const previewBox = $("#aiStyleRefPreview");
+  const previewText = $("#aiStyleRefPreviewText");
+  const prevLabel = btn?.textContent || "预览生成";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "生成中…";
+  }
+  setAiStyleRefMessage(
+    label ? `正在按「${label}」风格生成预览…` : "正在根据范文生成 AI 模拟预览…",
+    "info",
+  );
+  previewBox?.classList.add("hidden");
+
+  const providerCfg = collectAiProviderSettingsFromUI();
+  const host =
+    aiHostedAccountsCache.find((item) => item.enabled) ||
+    aiHostedAccountsCache[0] ||
+    null;
+
+  const payload = {
+    sampleText,
+    useNews: providerCfg.useNews,
+    selectedTokens: host?.selectedTokens,
+    marketSentiment: host?.marketSentiment,
   };
+  const profileId = host?.aiProfileId || defaultAiProfileIdCache;
+  if (profileId) {
+    payload.aiProfileId = profileId;
+  } else {
+    payload.provider = providerCfg.provider;
+    payload.baseUrl = providerCfg.baseUrl || undefined;
+    payload.apiKey = providerCfg.apiKey || undefined;
+    payload.model = providerCfg.model;
+  }
+
+  try {
+    const res = await fetch("/api/ai/preview-style", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "预览生成失败");
+    if (previewText) previewText.textContent = data.text || "";
+    previewBox?.classList.remove("hidden");
+    setAiStyleRefMessage(
+      `预览已生成${data.contentStyleLabel ? `（${data.contentStyleLabel}）` : ""}，见下方模拟正文`,
+      "ok",
+    );
+    previewBox?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (err) {
+    setAiStyleRefMessage(err.message || "预览生成失败", "err");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevLabel;
+    }
+  }
+}
+
+function refreshHostedStyleOptionsFromReferences() {
+  syncVisibleHostedRowsIntoCache();
+  aiUiOptions.contentStyleOptions = buildStyleOptionsFromReferences();
+  renderHostedAccountsList({
+    hostedAccounts: aiHostedAccountsCache,
+    aiProfiles: aiProfilesCache,
+  });
+}
+
+async function addAiStyleReferenceFromUi() {
+  const name = ($("#aiStyleRefNameInput")?.value || "").trim();
+  const sampleText = ($("#aiStyleRefTextInput")?.value || "").trim();
+  if (!name) {
+    setAiStyleRefMessage("请填写风格名称", "err");
+    return;
+  }
+  if (sampleText.length < 20) {
+    setAiStyleRefMessage("参考文章至少 20 字", "err");
+    return;
+  }
+  if (aiStyleReferencesCache.length >= 20) {
+    setAiStyleRefMessage("最多保存 20 个参考风格", "err");
+    return;
+  }
+  const id = `sref_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  aiStyleReferencesCache = [
+    {
+      id,
+      name: name.slice(0, 40),
+      sampleText: sampleText.slice(0, 4000),
+      createdAt: Date.now(),
+    },
+    ...aiStyleReferencesCache,
+  ];
+  if ($("#aiStyleRefNameInput")) $("#aiStyleRefNameInput").value = "";
+  if ($("#aiStyleRefTextInput")) $("#aiStyleRefTextInput").value = "";
+  renderAiStyleReferencesList();
+  refreshHostedStyleOptionsFromReferences();
+  setAiStyleRefMessage(`已添加「${name}」，正在保存…`, "info");
+  const saved = await saveAiSettingsOnly({ silent: true });
+  if (saved) setAiStyleRefMessage(`已添加并保存「${name}」，可在「AI 托管」页选择「参考·${name}」`, "ok");
+  else setAiStyleRefMessage(`已添加「${name}」，但自动保存失败，请点「保存 AI 设置」`, "err");
+}
+
+function onAiStyleRefListClick(e) {
+  const previewBtn = e.target.closest('[data-action="preview-style-ref"]');
+  if (previewBtn) {
+    const id = previewBtn.closest(".ai-style-ref-item")?.dataset.id;
+    const ref = aiStyleReferencesCache.find((item) => item.id === id);
+    if (ref) previewAiStyleReference(ref.sampleText, ref.name);
+    return;
+  }
+  const btn = e.target.closest('[data-action="delete-style-ref"]');
+  if (!btn) return;
+  const id = btn.closest(".ai-style-ref-item")?.dataset.id;
+  if (!id) return;
+  if (!confirm("确定删除该参考风格？")) return;
+  aiStyleReferencesCache = aiStyleReferencesCache.filter((item) => item.id !== id);
+  renderAiStyleReferencesList();
+  refreshHostedStyleOptionsFromReferences();
+  setAiStyleRefMessage("已删除，正在保存…", "info");
+  saveAiSettingsOnly({ silent: true }).then((saved) => {
+    if (saved) setAiStyleRefMessage("已删除并保存", "ok");
+    else setAiStyleRefMessage("已删除，但自动保存失败，请点「保存 AI 设置」", "err");
+  });
+}
+
+async function onAiStyleRefFileSelected(e) {
+  const file = e.target.files?.[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    const text = await file.text();
+    if ($("#aiStyleRefTextInput")) $("#aiStyleRefTextInput").value = text.slice(0, 4000);
+    if (!$("#aiStyleRefNameInput")?.value.trim()) {
+      const base = String(file.name || "").replace(/\.[^.]+$/, "").trim();
+      if (base && $("#aiStyleRefNameInput")) $("#aiStyleRefNameInput").value = base.slice(0, 40);
+    }
+    setAiStyleRefMessage(`已载入文件「${file.name}」，可点「预览生成」或「添加为风格」`, "ok");
+  } catch {
+    setAiStyleRefMessage("读取文件失败", "err");
+  }
+}
+
+function collectAiConfigFromUI() {
+  return {
+    ...collectAiProviderSettingsFromUI(),
+    ...collectAiHostingSettingsFromUI(),
+  };
+}
+
+/** 仅保存「AI 发布设置」页：服务商、资讯开关、参考风格（不影响托管开关与节奏） */
+async function saveAiSettingsOnly(overrides = {}, { silent = false } = {}) {
+  const payload = { ...collectAiProviderSettingsFromUI(), ...overrides };
+  if (!payload.apiKey) delete payload.apiKey;
+  if (!silent) showAiSettingsMessage("正在保存 AI 设置…", "info");
+  try {
+    const res = await fetch("/api/ai/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const raw = await res.json();
+    if (!res.ok) {
+      if (!silent) showAiSettingsMessage(raw.error || "保存失败", "err");
+      return null;
+    }
+    const data = normalizeAiConfigResponse(raw);
+    await applyAiConfigToUI(data);
+    if (!silent) showAiSettingsMessage("AI 设置已保存", "ok");
+    return data;
+  } catch {
+    if (!silent) showAiSettingsMessage("无法连接本地服务", "err");
+    return null;
+  }
 }
 
 async function saveAiConfig(overrides = {}, { silent = false } = {}) {
@@ -3188,7 +4365,7 @@ async function saveAiConfig(overrides = {}, { silent = false } = {}) {
 async function testAiApi() {
   const config = collectAiConfigFromUI();
   const apiKey = config.apiKey;
-  showAiMessage("正在测试 AI 连接...", "info");
+  showAiSettingsMessage("正在测试 AI 连接...", "info");
   try {
     const res = await fetch("/api/ai/test", {
       method: "POST",
@@ -3202,12 +4379,12 @@ async function testAiApi() {
     });
     const data = await res.json();
     if (!res.ok) {
-      showAiMessage(data.error || "测试失败", "err");
+      showAiSettingsMessage(data.error || "测试失败", "err");
       return;
     }
-    showAiMessage(`${data.message}：${data.preview || ""}`, "ok");
+    showAiSettingsMessage(`${data.message}：${data.preview || ""}`, "ok");
   } catch {
-    showAiMessage("无法连接本地服务", "err");
+    showAiSettingsMessage("无法连接本地服务", "err");
   }
 }
 
@@ -3345,7 +4522,6 @@ async function aiRun({ publish = false } = {}) {
 }
 
 async function aiFillPostModal() {
-  const topic = $("#aiTopicInput").value.trim() || prompt("请输入生成主题（可留空使用默认主题）", "") || undefined;
   const config = collectAiConfigFromUI();
   const hostConfig = config.hostedAccounts.find((item) => item.enabled) || config.hostedAccounts[0];
   const btn = $("#btnAiFillPost");
@@ -3353,20 +4529,25 @@ async function aiFillPostModal() {
   btn.disabled = true;
   btn.textContent = "生成中...";
   try {
+    const payload = {
+      count: 1,
+      contentStyles: hostConfig?.contentStyles,
+      selectedTokens: hostConfig?.selectedTokens,
+      marketSentiment: hostConfig?.marketSentiment,
+    };
+    const profileId = hostConfig?.aiProfileId || defaultAiProfileIdCache;
+    if (profileId) {
+      payload.aiProfileId = profileId;
+    } else {
+      payload.apiKey = config.apiKey || undefined;
+      payload.provider = config.provider;
+      payload.baseUrl = config.baseUrl || undefined;
+      payload.model = config.model;
+    }
     const res = await fetch("/api/ai/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        topic,
-        count: 1,
-        apiKey: config.apiKey || undefined,
-        provider: config.provider,
-        baseUrl: config.baseUrl || undefined,
-        model: config.model,
-        contentStyles: hostConfig?.contentStyles,
-        selectedTokens: hostConfig?.selectedTokens,
-        marketSentiment: hostConfig?.marketSentiment,
-      }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -3638,9 +4819,16 @@ async function toggleComments(postId) {
 }
 
 async function refreshAllStats({ silent = false } = {}) {
-  const published = posts.filter((p) => p.publishState === "published" && getPostRef(p));
+  const published = getPublishedPostsForMonitor().filter((p) => getPostRef(p));
   if (!published.length) {
-    if (!silent) alert("没有已发布且可查询的帖子");
+    if (!silent) {
+      const accountId = getSelectedMonitorAccountId();
+      alert(
+        accountId
+          ? `账号「${getAccountName(accountId)}」暂无已发布且可查询的帖子`
+          : "没有已发布且可查询的帖子",
+      );
+    }
     return;
   }
 
@@ -3683,17 +4871,27 @@ function addViewAlert(post, from, to, delta) {
   }
 }
 
+function getFilteredAlerts() {
+  const accountId = getSelectedMonitorAccountId();
+  if (!accountId) return alerts;
+  return alerts.filter((a) => {
+    const post = posts.find((p) => p.id === a.postId);
+    return post && getPostAccountId(post) === accountId;
+  });
+}
+
 function renderAlerts() {
   const panel = $("#alertPanel");
   const list = $("#alertList");
-  if (!alerts.length) {
+  const visible = getFilteredAlerts();
+  if (!visible.length) {
     panel.classList.add("hidden");
     list.innerHTML = "";
     return;
   }
 
   panel.classList.remove("hidden");
-  list.innerHTML = alerts
+  list.innerHTML = visible
     .map(
       (a) => `
     <div class="alert-item">
@@ -3818,10 +5016,12 @@ function renderPostListContainer(container, visible, { selectable = true, emptyT
 function renderPosts() {
   const draftPosts = getDraftPosts();
   const publishedPosts = getPublishedPosts();
+  const monitorPosts = getPublishedPostsForMonitor();
   updateDraftStats();
   updateSelectAllCheckbox();
   updatePublishBtn();
   updateDraftBulkAccountBar();
+  updateMonitorSectionHint();
 
   const draftEmpty =
     posts.length === 0
@@ -3832,10 +5032,31 @@ function renderPosts() {
           ? "暂无失败帖子"
           : "暂无待发帖子";
 
+  const monitorAccountId = getSelectedMonitorAccountId();
+  const monitorQuery = getMonitorSearchQuery();
+  const monitorAllForAccount = (accountId) => {
+    const published = getPublishedPosts();
+    return accountId ? published.filter((p) => getPostAccountId(p) === accountId) : published;
+  };
+  let monitorEmpty = "暂无已发布帖子，发布后可在此查看互动数据";
+  if (monitorAccountId && monitorQuery) {
+    monitorEmpty =
+      monitorAllForAccount(monitorAccountId).length === 0
+        ? `账号「${getAccountName(monitorAccountId)}」暂无已发布帖子`
+        : `账号「${getAccountName(monitorAccountId)}」下未找到包含「${monitorQuery}」的帖子`;
+  } else if (monitorAccountId) {
+    monitorEmpty = `账号「${getAccountName(monitorAccountId)}」暂无已发布帖子`;
+  } else if (monitorQuery) {
+    monitorEmpty =
+      monitorAllForAccount("").length === 0
+        ? "暂无已发布帖子，发布后可在此查看互动数据"
+        : `未找到包含「${monitorQuery}」的帖子`;
+  }
+
   renderPostListContainer($("#postList"), draftPosts, { selectable: true, emptyText: draftEmpty });
-  renderPostListContainer($("#monitorPostList"), publishedPosts, {
+  renderPostListContainer($("#monitorPostList"), monitorPosts, {
     selectable: false,
-    emptyText: "暂无已发布帖子，发布后可在此查看互动数据",
+    emptyText: monitorEmpty,
   });
   renderPostListContainer($("#publishedPostList"), publishedPosts, {
     selectable: false,
@@ -3847,6 +5068,421 @@ function renderPosts() {
     emptyText: "暂无已发布帖子，去草稿箱发布或拉取广场历史帖子",
   });
   if (activeView === "home") renderHomeDashboard();
+}
+
+const TOKEN_PAGE_SIZE = 50;
+/** @type {{tokens:Array, chainOptions:Array, sourceOptions:Array, quotes:Map<string, any>, query:string, loading:boolean, settings:object, refreshTimer:any, page:number, seedCount:number}} */
+let tokenRegistryState = {
+  tokens: [],
+  chainOptions: [],
+  sourceOptions: [],
+  quotes: new Map(),
+  query: "",
+  loading: false,
+  settings: { refreshIntervalSec: 60 },
+  refreshTimer: null,
+  page: 1,
+  seedCount: 20,
+};
+
+function setTokenRegistryMessage(text, type = "") {
+  const el = $("#tokenRegistryMessage");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = `message${type ? ` ${type}` : ""}`;
+}
+
+function setTokenModalMessage(text, type = "") {
+  const el = $("#tokenModalMessage");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = `message${type ? ` ${type}` : ""}`;
+}
+
+function fillTokenSelectOptions() {
+  const chainSelect = $("#tokenChainSelect");
+  const sourceSelect = $("#tokenSourceSelect");
+  if (chainSelect) {
+    chainSelect.innerHTML = (tokenRegistryState.chainOptions || [])
+      .map((opt) => `<option value="${escapeHtml(opt.id)}">${escapeHtml(opt.label)}</option>`)
+      .join("");
+  }
+  if (sourceSelect) {
+    sourceSelect.innerHTML = (tokenRegistryState.sourceOptions || [])
+      .map((opt) => `<option value="${escapeHtml(opt.id)}">${escapeHtml(opt.label)}</option>`)
+      .join("");
+  }
+}
+
+function formatTokenChange(changePercent) {
+  const n = Number(changePercent);
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function getFilteredTokenRows() {
+  const q = String(tokenRegistryState.query || "").trim().toLowerCase();
+  return (tokenRegistryState.tokens || []).filter((token) => {
+    if (!q) return true;
+    return [token.symbol, token.name, token.binanceSymbol, token.contractAddress, token.contractNetwork, token.chain]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
+}
+
+function renderTokenTypeBadge(token) {
+  const isAlpha = token.listingType === "alpha" || token.chain === "binance-alpha";
+  if (isAlpha) {
+    return `<span class="token-type-badge is-alpha" title="币安 Alpha / 合约代币">合约</span>`;
+  }
+  return `<span class="token-type-badge is-spot" title="币安现货">现货</span>`;
+}
+
+function renderTokenRegistryPagination(totalFiltered) {
+  const el = $("#tokenRegistryPagination");
+  const countEl = $("#tokenRegistryCountText");
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / TOKEN_PAGE_SIZE) || 1);
+  if (tokenRegistryState.page > totalPages) tokenRegistryState.page = totalPages;
+  if (countEl) {
+    const withContract = (tokenRegistryState.tokens || []).filter((t) => t.contractAddress).length;
+    countEl.textContent = `共 ${tokenRegistryState.tokens.length} 个代币（合约 ${withContract}）· 当前筛选 ${totalFiltered} · 第 ${tokenRegistryState.page}/${totalPages} 页`;
+  }
+  if (!el) return;
+  if (totalPages <= 1) {
+    el.innerHTML = "";
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  const page = tokenRegistryState.page;
+  el.innerHTML = `
+    <button type="button" class="btn btn-ghost btn-sm" data-token-page="1" ${page <= 1 ? "disabled" : ""}>首页</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-token-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
+    <span class="muted">${page} / ${totalPages}</span>
+    <button type="button" class="btn btn-ghost btn-sm" data-token-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>下一页</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-token-page="${totalPages}" ${page >= totalPages ? "disabled" : ""}>末页</button>
+  `;
+}
+
+function renderTokenRegistryTable() {
+  const body = $("#tokenRegistryBody");
+  if (!body) return;
+  const rows = getFilteredTokenRows();
+  renderTokenRegistryPagination(rows.length);
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="10" class="muted">${tokenRegistryState.loading ? "加载中…" : "暂无代币，请点「从币安同步全部」"}</td></tr>`;
+    return;
+  }
+
+  const start = (tokenRegistryState.page - 1) * TOKEN_PAGE_SIZE;
+  const pageRows = rows.slice(start, start + TOKEN_PAGE_SIZE);
+
+  body.innerHTML = pageRows
+    .map((token) => {
+      const quote = tokenRegistryState.quotes.get(String(token.symbol || "").toUpperCase());
+      const price = quote ? `$${escapeHtml(String(quote.priceFormatted || quote.price || ""))}` : "—";
+      const change = quote ? formatTokenChange(quote.changePercent) : "—";
+      const changeClass =
+        Number(quote?.changePercent) > 0 ? "ok" : Number(quote?.changePercent) < 0 ? "err" : "muted";
+      const contractShort = token.contractAddress
+        ? token.contractAddress.length > 16
+          ? `${token.contractAddress.slice(0, 8)}…${token.contractAddress.slice(-6)}`
+          : token.contractAddress
+        : "—";
+      const lockMark = token.contractUserEdited
+        ? `<span class="token-lock-mark" title="用户已改过，同步不会覆盖">锁</span>`
+        : "";
+      return `
+        <tr class="${token.enabled === false ? "is-disabled" : ""}" data-token-id="${escapeHtml(token.id)}">
+          <td><input type="checkbox" data-action="toggle-enabled" ${token.enabled === false ? "" : "checked"} title="启用" /></td>
+          <td>${renderTokenTypeBadge(token)}</td>
+          <td><strong>$${escapeHtml(token.symbol)}</strong></td>
+          <td>${escapeHtml(token.name || token.symbol)}</td>
+          <td>${escapeHtml(token.binanceSymbol || `${token.symbol}USDT`)}</td>
+          <td title="${escapeHtml(token.contractAddress || "")}"><code class="token-addr">${escapeHtml(contractShort)}</code>${lockMark}</td>
+          <td class="muted">${escapeHtml(token.contractNetwork || "—")}</td>
+          <td class="num">${price}</td>
+          <td class="num ${changeClass}">${change}</td>
+          <td class="col-actions">
+            <button type="button" class="btn btn-ghost btn-sm" data-action="edit">编辑</button>
+            <button type="button" class="btn btn-ghost btn-sm btn-danger" data-action="delete">删除</button>
+          </td>
+        </tr>`;
+    })
+    .join("");
+}
+
+function stopTokenQuotesAutoRefresh() {
+  if (tokenRegistryState.refreshTimer) {
+    clearInterval(tokenRegistryState.refreshTimer);
+    tokenRegistryState.refreshTimer = null;
+  }
+}
+
+function applyTokenRefreshIntervalToUi() {
+  const input = $("#tokenRefreshIntervalInput");
+  if (input) input.value = String(tokenRegistryState.settings?.refreshIntervalSec ?? 60);
+}
+
+function startTokenQuotesAutoRefresh() {
+  stopTokenQuotesAutoRefresh();
+  if (activeView !== "tokens") return;
+  const sec = Number(tokenRegistryState.settings?.refreshIntervalSec);
+  if (!Number.isFinite(sec) || sec <= 0) return;
+  const ms = Math.max(15, sec) * 1000;
+  tokenRegistryState.refreshTimer = setInterval(() => {
+    if (activeView !== "tokens") {
+      stopTokenQuotesAutoRefresh();
+      return;
+    }
+    refreshTokenQuotes(false);
+  }, ms);
+}
+
+function describeTokenRefreshHint() {
+  const sec = Number(tokenRegistryState.settings?.refreshIntervalSec);
+  if (!Number.isFinite(sec) || sec <= 0) return "自动刷新已关闭";
+  return `每 ${sec} 秒自动从币安公开 API 刷新报价`;
+}
+
+async function loadTokenRegistry({ autoSyncIfSeed = true } = {}) {
+  tokenRegistryState.loading = true;
+  setTokenRegistryMessage("加载代币列表…", "info");
+  renderTokenRegistryTable();
+  try {
+    const res = await fetch("/api/token-registry");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "加载失败");
+    tokenRegistryState.tokens = data.tokens || [];
+    tokenRegistryState.chainOptions = data.chainOptions || [];
+    tokenRegistryState.sourceOptions = data.sourceOptions || [];
+    tokenRegistryState.settings = data.settings || { refreshIntervalSec: 60 };
+    tokenRegistryState.seedCount = Number(data.seedCount) || 20;
+    applyTokenRefreshIntervalToUi();
+    fillTokenSelectOptions();
+    renderTokenRegistryTable();
+    setTokenRegistryMessage(
+      `共 ${tokenRegistryState.tokens.length} 个代币。${describeTokenRefreshHint()}。`,
+      "info",
+    );
+
+    const seedOnly =
+      autoSyncIfSeed &&
+      tokenRegistryState.tokens.length <= (tokenRegistryState.seedCount || 20) &&
+      tokenRegistryState.tokens.every((t) =>
+        DEFAULT_AVAILABLE_TOKENS.includes(String(t.symbol || "").toUpperCase()),
+      );
+    if (seedOnly) {
+      setTokenRegistryMessage("检测到仅有默认代币，正在自动从币安同步全部列表…", "info");
+      await syncBinanceTokensFromUi({ silentConfirm: true });
+      return;
+    }
+
+    await refreshTokenQuotes(false);
+    startTokenQuotesAutoRefresh();
+  } catch (err) {
+    setTokenRegistryMessage(err.message || "加载失败", "err");
+  } finally {
+    tokenRegistryState.loading = false;
+  }
+}
+
+async function saveTokenRefreshSettings() {
+  const sec = Number($("#tokenRefreshIntervalInput")?.value);
+  try {
+    const res = await fetch("/api/token-registry/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshIntervalSec: sec }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "保存失败");
+    tokenRegistryState.settings = data.settings || { refreshIntervalSec: sec };
+    applyTokenRefreshIntervalToUi();
+    startTokenQuotesAutoRefresh();
+    setTokenRegistryMessage(`刷新设置已保存。${describeTokenRefreshHint()}。`, "ok");
+  } catch (err) {
+    setTokenRegistryMessage(err.message || "保存失败", "err");
+  }
+}
+
+async function syncBinanceTokensFromUi({ silentConfirm = false } = {}) {
+  if (
+    !silentConfirm &&
+    !confirm(
+      "从币安同步全部现货 + Alpha？\n会自动填写合约地址；只有你手动改过的合约不会被覆盖。\n大约需要 10–30 秒，请稍候。",
+    )
+  ) {
+    return;
+  }
+  const btn = $("#btnSyncBinanceTokens");
+  if (btn) btn.disabled = true;
+  setTokenRegistryMessage("正在同步：拉取现货列表与合约地址（约 10–30 秒）…", "info");
+  try {
+    const res = await fetch("/api/token-registry/sync", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "同步失败");
+    if (data.settings) tokenRegistryState.settings = data.settings;
+    applyTokenRefreshIntervalToUi();
+    setTokenRegistryMessage(
+      `同步完成：新增 ${data.added || 0}，回填合约 ${data.contractFilled || 0}，更新合约 ${data.contractUpdated || 0}，共 ${data.total || 0}（现货 ${data.spotPairs || 0} / Alpha ${data.alphaOnly || 0}）。正在刷新列表…`,
+      "ok",
+    );
+    await loadTokenRegistry({ autoSyncIfSeed: false });
+  } catch (err) {
+    setTokenRegistryMessage(err.message || "同步失败", "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function refreshTokenQuotes(showBusy = true) {
+  const requestId = (tokenRegistryState.quoteRequestId = (tokenRegistryState.quoteRequestId || 0) + 1);
+  if (showBusy) setTokenRegistryMessage("正在从币安公开 API 刷新报价…", "info");
+  try {
+    // 优先刷新当前筛选后这一页，避免全量 1000+ 代币卡顿
+    const filtered = getFilteredTokenRows();
+    const start = (tokenRegistryState.page - 1) * TOKEN_PAGE_SIZE;
+    const pageSymbols = filtered.slice(start, start + TOKEN_PAGE_SIZE).map((t) => t.symbol);
+    const qs = pageSymbols.length
+      ? `?symbols=${encodeURIComponent(pageSymbols.join(","))}`
+      : "";
+    const res = await fetch(`/api/token-registry/quotes${qs}`);
+    const data = await res.json();
+    if (requestId !== tokenRegistryState.quoteRequestId) return;
+    if (!res.ok) throw new Error(data.error || "刷新报价失败");
+    const map = new Map(tokenRegistryState.quotes || []);
+    for (const ticker of data.tickers || []) {
+      const sym = String(ticker.symbol || "").toUpperCase();
+      map.set(sym, {
+        ...ticker,
+        priceFormatted: formatClientUsdPrice(ticker.price),
+      });
+    }
+    tokenRegistryState.quotes = map;
+    renderTokenRegistryTable();
+    const missing = (data.missing || []).length;
+    const time = new Date().toLocaleTimeString();
+    setTokenRegistryMessage(
+      missing
+        ? `[${time}] 本页报价已刷新（${(data.tickers || []).length}）；${missing} 个暂无数据。${describeTokenRefreshHint()}`
+        : `[${time}] 本页报价已刷新（${(data.tickers || []).length}）。${describeTokenRefreshHint()}`,
+      missing ? "info" : "ok",
+    );
+  } catch (err) {
+    if (requestId !== tokenRegistryState.quoteRequestId) return;
+    setTokenRegistryMessage(err.message || "刷新报价失败", "err");
+  }
+}
+
+function formatClientUsdPrice(price) {
+  const num = Number(price);
+  if (!Number.isFinite(num)) return String(price || "");
+  if (num >= 1000) return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (num >= 1) return num.toFixed(4).replace(/\.?0+$/, "");
+  if (num >= 0.01) return num.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  return num.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function openTokenModal(token = null) {
+  fillTokenSelectOptions();
+  $("#tokenEditId").value = token?.id || "";
+  $("#tokenModalTitle").textContent = token ? `编辑 ${token.symbol}` : "添加代币";
+  $("#tokenSymbolInput").value = token?.symbol || "";
+  $("#tokenNameInput").value = token?.name || "";
+  $("#tokenBinanceSymbolInput").value = token?.binanceSymbol || "";
+  $("#tokenContractInput").value = token?.contractAddress || "";
+  $("#tokenNotesInput").value = token?.notes || "";
+  $("#tokenEnabledInput").checked = token?.enabled !== false;
+  if ($("#tokenChainSelect")) $("#tokenChainSelect").value = token?.chain || "binance-spot";
+  if ($("#tokenSourceSelect")) $("#tokenSourceSelect").value = token?.source || "auto";
+  setTokenModalMessage("");
+  openAppModal("tokenModal");
+  $("#tokenSymbolInput")?.focus();
+}
+
+async function saveTokenFromModal(e) {
+  e.preventDefault();
+  const id = $("#tokenEditId")?.value || "";
+  const payload = {
+    id: id || undefined,
+    symbol: $("#tokenSymbolInput")?.value || "",
+    name: $("#tokenNameInput")?.value || "",
+    binanceSymbol: $("#tokenBinanceSymbolInput")?.value || "",
+    contractAddress: $("#tokenContractInput")?.value || "",
+    chain: $("#tokenChainSelect")?.value || "",
+    source: $("#tokenSourceSelect")?.value || "auto",
+    notes: $("#tokenNotesInput")?.value || "",
+    enabled: Boolean($("#tokenEnabledInput")?.checked),
+  };
+  setTokenModalMessage("保存中…", "info");
+  try {
+    const res = await fetch(id ? `/api/token-registry/${encodeURIComponent(id)}` : "/api/token-registry", {
+      method: id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "保存失败");
+    $("#tokenModal")?.close();
+    await loadTokenRegistry({ autoSyncIfSeed: false });
+    setTokenRegistryMessage(`已保存 $${data.token?.symbol || payload.symbol}`, "ok");
+  } catch (err) {
+    setTokenModalMessage(err.message || "保存失败", "err");
+  }
+}
+
+async function onTokenRegistryClick(e) {
+  const btn = e.target.closest("[data-action]");
+  if (!btn || btn.tagName === "INPUT") return;
+  const row = btn.closest("tr[data-token-id]");
+  const id = row?.dataset.tokenId;
+  if (!id) return;
+  const token = tokenRegistryState.tokens.find((t) => t.id === id);
+  if (!token) return;
+
+  if (btn.dataset.action === "edit") {
+    openTokenModal(token);
+    return;
+  }
+  if (btn.dataset.action === "delete") {
+    if (!confirm(`确定删除 $${token.symbol}？`)) return;
+    try {
+      const res = await fetch(`/api/token-registry/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "删除失败");
+      await loadTokenRegistry({ autoSyncIfSeed: false });
+      setTokenRegistryMessage(`已删除 $${token.symbol}`, "ok");
+    } catch (err) {
+      setTokenRegistryMessage(err.message || "删除失败", "err");
+    }
+  }
+}
+
+async function onTokenRegistryChange(e) {
+  const input = e.target.closest('input[data-action="toggle-enabled"]');
+  if (!input) return;
+  const row = input.closest("tr[data-token-id]");
+  const id = row?.dataset.tokenId;
+  if (!id) return;
+  try {
+    const res = await fetch(`/api/token-registry/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: input.checked }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "更新失败");
+    const idx = tokenRegistryState.tokens.findIndex((t) => t.id === id);
+    if (idx >= 0) tokenRegistryState.tokens[idx] = data.token;
+    renderTokenRegistryTable();
+  } catch (err) {
+    input.checked = !input.checked;
+    setTokenRegistryMessage(err.message || "更新失败", "err");
+  }
 }
 
 function escapeHtml(str) {

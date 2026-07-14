@@ -7,6 +7,8 @@ data/*
 .env.*
 *.log
 release/
+release-*/
+build/ms-playwright/
 .electron-vendor/
 .DS_Store
 Thumbs.db

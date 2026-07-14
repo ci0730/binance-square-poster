@@ -12,12 +12,13 @@ import {
   saveProxy,
   saveProxyConfig,
   getGlobalProxyConfigPublic,
+  mergeGlobalProxyCredentials,
   applySystemProxyConfig,
   dismissProxyGuide,
   getBrowserPath,
   saveBrowserPath,
 } from "./lib/square-api.js";
-import { getUploadsDir, getConfigDir } from "./lib/app-paths.js";
+import { getUploadsDir, getConfigDir, getDataDirInfo, setCustomDataDir, resetCustomDataDir } from "./lib/app-paths.js";
 import {
   listAccountsPublic,
   createAccount,
@@ -32,8 +33,11 @@ import {
   getAccount,
   resolveAccountProxy,
   resolveProxyUrlFromBody,
+  mergeAccountProxyCredentials,
   describeAccountProxyNetworkHint,
 } from "./lib/accounts.js";
+import { normalizeProxyConfig } from "./lib/proxy-config.js";
+import { probeProxy } from "./lib/proxy-probe.js";
 import { fetchPostStatsByRef } from "./lib/square-stats.js";
 import { fetchPostCommentsByRef, closeBrowserClient, testBrowserLaunch } from "./lib/square-browser.js";
 import { fetchAccountPublishedPosts, discoverIdentityFromPostRef } from "./lib/square-posts.js";
@@ -43,12 +47,22 @@ import {
   mergeCachedPosts,
   syncCachedPosts,
 } from "./lib/post-cache.js";
-import { getAiSettingsPublic, saveAiSettings, resolveAiCredentials } from "./lib/ai-settings.js";
+import { getAiSettingsPublic, saveAiSettings, resolveAiCredentials, readAiSettings } from "./lib/ai-settings.js";
 import { listAiProvidersPublic } from "./lib/ai-providers.js";
 import { generateSquarePost, testAiApiKey } from "./lib/ai-generator.js";
 import { getAiSchedulerStatus, runAiHostedCycle, startAiScheduler } from "./lib/ai-scheduler.js";
-import { buildCryptoContext } from "./lib/crypto-context.js";
+import { buildCryptoContext, fetchRegistryTokenQuotes, syncBinanceTokenRegistry } from "./lib/crypto-context.js";
+import {
+  listTokenRegistryPublic,
+  upsertTokenRegistryEntry,
+  updateTokenRegistryEntry,
+  deleteTokenRegistryEntry,
+  ensureTokenRegistrySeed,
+  saveTokenRegistrySettings,
+} from "./lib/token-registry.js";
 import { getDeviceBindingPublic, unbindDevice } from "./lib/device-binding.js";
+import { appendSystemLog, listSystemLogs, clearSystemLogs } from "./lib/system-log.js";
+import { toChineseError } from "./lib/error-zh.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3456;
@@ -235,6 +249,7 @@ const server = http.createServer(async (req, res) => {
         configured: hasAnyAccountConfigured(),
         maskedKey: defaultAcc?.maskedKey || null,
         dataDir: getConfigDir(),
+        dataDirInfo: getDataDirInfo(),
         proxy: getProxyUrl() || null,
         proxyConfig: getGlobalProxyConfigPublic(),
         hasBinanceCookie: defaultAcc?.hasCookie || false,
@@ -393,6 +408,13 @@ const server = http.createServer(async (req, res) => {
 
       if (req.method === "PUT") {
         const body = JSON.parse(await readBody(req));
+        // 编辑账号：空 API Key / 未传 Cookie 都不覆盖已有值
+        if (body && (body.apiKey == null || String(body.apiKey).trim() === "")) {
+          delete body.apiKey;
+        }
+        if (body && Object.prototype.hasOwnProperty.call(body, "cookie") && body.cookie == null) {
+          delete body.cookie;
+        }
         const account = updateAccount(accountId, body);
         await closeBrowserClient();
         json(res, 200, {
@@ -477,9 +499,71 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/config/network-test" && req.method === "POST") {
       const body = req.headers["content-length"] ? JSON.parse(await readBody(req)) : {};
+      // 自定义代理：分层检测 + HTTP/Socks5 自动纠错；全局/直连仍走原逻辑
+      let proxyConfig = normalizeProxyConfig(body?.proxyConfig, body?.proxy);
+      if (body?.accountId) {
+        proxyConfig = mergeAccountProxyCredentials(body.accountId, proxyConfig);
+      } else {
+        proxyConfig = mergeGlobalProxyCredentials(proxyConfig);
+      }
+      if (["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
+        // 留空表示用已保存密码，但库里没有时可明确提示（避免误报超时）
+        if (
+          body?.useSavedProxyPassword &&
+          !String(proxyConfig.password || "").trim()
+        ) {
+          const scope = body?.accountId ? "该账号" : "全局";
+          json(res, 400, {
+            ok: false,
+            stage: "proxy",
+            message: `未找到${scope}已保存的代理密码。请在「代理密码」中重新输入后再检测，并点保存。`,
+          });
+          return;
+        }
+        const result = await probeProxy(proxyConfig);
+        json(res, result.ok ? 200 : 400, result);
+        return;
+      }
       const proxyUrl = resolveProxyUrlFromBody(body);
       await testNetwork({ proxyUrl });
       json(res, 200, { ok: true, message: "网络连接正常，可以访问币安 API" });
+      return;
+    }
+
+    if (pathname === "/api/config/data-dir" && req.method === "GET") {
+      json(res, 200, getDataDirInfo());
+      return;
+    }
+
+    if (pathname === "/api/config/data-dir" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req));
+      try {
+        const result = setCustomDataDir(body.path || body.dataDir, { migrate: body.migrate !== false });
+        json(res, 200, {
+          ...result,
+          message: result.migration.migrated
+            ? `数据目录已更新，已迁移 ${result.migration.files} 项。请重启应用后生效。`
+            : "数据目录已更新。请重启应用后生效。",
+        });
+      } catch (err) {
+        json(res, 400, { error: err.message || "设置数据目录失败" });
+      }
+      return;
+    }
+
+    if (pathname === "/api/config/data-dir/reset" && req.method === "POST") {
+      const body = req.headers["content-length"] ? JSON.parse(await readBody(req)) : {};
+      try {
+        const result = resetCustomDataDir({ migrate: body.migrate !== false });
+        json(res, 200, {
+          ...result,
+          message: result.migration.migrated
+            ? `已恢复默认目录，并迁移 ${result.migration.files} 项。请重启应用后生效。`
+            : "已恢复默认目录。请重启应用后生效。",
+        });
+      } catch (err) {
+        json(res, 400, { error: err.message || "恢复默认目录失败" });
+      }
       return;
     }
 
@@ -503,17 +587,26 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/config/test" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
+      const typedKey = String(body?.apiKey || "").trim();
+      // 与代理密码同理：留空 / 要求使用已保存 Key 时，强制走 accountId，避免空串或脏输入覆盖
+      const useSavedApiKey = Boolean(body?.useSavedApiKey) || !typedKey;
       let key;
-      const proxyUrl = resolveProxyUrlFromBody(body);
-      if (body?.apiKey) {
-        key = body.apiKey.trim();
+      if (!useSavedApiKey && typedKey) {
+        key = typedKey;
       } else if (body?.accountId) {
         key = resolveAccountApiKey(body.accountId);
       } else {
         key = resolveAccountApiKey();
       }
+      // 会合并账号里已保存的代理密码（UI 留空时）
+      const proxyUrl = resolveProxyUrlFromBody(body);
       await testApiKey(key, { proxyUrl });
-      json(res, 200, { ok: true, message: "API Key 验证成功" });
+      json(res, 200, {
+        ok: true,
+        message: useSavedApiKey
+          ? "API Key 验证成功（已使用已保存的 Key，并连通币安）"
+          : "API Key 验证成功（已连通币安）",
+      });
       return;
     }
 
@@ -639,6 +732,19 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/system-log" && req.method === "GET") {
+      const sinceId = Number(url.searchParams.get("sinceId") || 0);
+      const limit = Number(url.searchParams.get("limit") || 100);
+      json(res, 200, { logs: listSystemLogs({ sinceId, limit }) });
+      return;
+    }
+
+    if (pathname === "/api/system-log" && req.method === "DELETE") {
+      clearSystemLogs();
+      json(res, 200, { ok: true });
+      return;
+    }
+
     if (pathname === "/api/ai/test" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
       const creds = resolveAiCredentials({
@@ -656,6 +762,49 @@ const server = http.createServer(async (req, res) => {
         baseUrl: creds.baseUrl,
       });
       json(res, 200, result);
+      return;
+    }
+
+    if (pathname === "/api/ai/preview-style" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req));
+      const sampleText = String(body?.sampleText || "").trim();
+      if (sampleText.length < 20) {
+        json(res, 400, { error: "参考文章至少 20 字" });
+        return;
+      }
+      const creds = resolveAiCredentials({
+        profileId: body.aiProfileId,
+        overrides: {
+          apiKey: body.apiKey,
+          provider: body.provider,
+          baseUrl: body.baseUrl,
+          model: body.model,
+        },
+      });
+      const previewRefId = `preview_${Date.now()}`;
+      const styleReferences = [
+        ...(readAiSettings().styleReferences || []),
+        { id: previewRefId, name: "预览", sampleText, createdAt: Date.now() },
+      ];
+      const styleId = `ref:${previewRefId}`;
+      const draft = await generateSquarePost({
+        apiKey: creds.apiKey,
+        provider: creds.provider,
+        baseUrl: creds.baseUrl,
+        model: creds.model,
+        contentStyle: styleId,
+        contentStyles: [styleId],
+        styleReferencesOverride: styleReferences,
+        selectedTokens: body.selectedTokens,
+        marketSentiment: body.marketSentiment,
+        useNews: body.useNews !== false,
+      });
+      json(res, 200, {
+        ok: true,
+        text: draft.text,
+        topic: draft.topic,
+        contentStyleLabel: draft.contentStyleLabel,
+      });
       return;
     }
 
@@ -700,6 +849,70 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/ai/context" && req.method === "GET") {
       const context = await buildCryptoContext();
       json(res, 200, { ok: true, context });
+      return;
+    }
+
+    if (pathname === "/api/token-registry" && req.method === "GET") {
+      ensureTokenRegistrySeed();
+      json(res, 200, listTokenRegistryPublic());
+      return;
+    }
+
+    if (pathname === "/api/token-registry/settings" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req));
+      const settings = saveTokenRegistrySettings(body || {});
+      json(res, 200, { ok: true, settings });
+      return;
+    }
+
+    if (pathname === "/api/token-registry/sync" && req.method === "POST") {
+      const result = await syncBinanceTokenRegistry();
+      // 不回传完整代币列表，避免超大 JSON 卡住界面
+      json(res, 200, {
+        ok: true,
+        ...result,
+        settings: listTokenRegistryPublic().settings,
+      });
+      return;
+    }
+
+    if (pathname === "/api/token-registry/quotes" && req.method === "GET") {
+      const symbolsParam = String(url.searchParams.get("symbols") || "").trim();
+      const symbols = symbolsParam
+        ? symbolsParam.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+        : [];
+      const result = await fetchRegistryTokenQuotes(symbols);
+      json(res, 200, { ok: true, ...result });
+      return;
+    }
+
+    if (pathname === "/api/token-registry" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req));
+      const saved = upsertTokenRegistryEntry(body || {});
+      json(res, 200, { ok: true, token: saved });
+      return;
+    }
+
+    if (pathname.startsWith("/api/token-registry/") && req.method === "PUT") {
+      const id = decodeURIComponent(pathname.slice("/api/token-registry/".length));
+      if (!id || id.includes("/")) {
+        json(res, 400, { error: "无效的代币 ID" });
+        return;
+      }
+      const body = JSON.parse(await readBody(req));
+      const saved = updateTokenRegistryEntry(id, body || {});
+      json(res, 200, { ok: true, token: saved });
+      return;
+    }
+
+    if (pathname.startsWith("/api/token-registry/") && req.method === "DELETE") {
+      const id = decodeURIComponent(pathname.slice("/api/token-registry/".length));
+      if (!id || id.includes("/")) {
+        json(res, 400, { error: "无效的代币 ID" });
+        return;
+      }
+      const removed = deleteTokenRegistryEntry(id);
+      json(res, 200, { ok: true, token: removed });
       return;
     }
 
@@ -760,8 +973,9 @@ const server = http.createServer(async (req, res) => {
     json(res, 404, { error: "Not found" });
   } catch (err) {
     if (!res.headersSent) {
-      const hint = describeAccountProxyNetworkHint(requestAccountId, err.message);
-      json(res, err.message.includes("未配置") ? 400 : 500, { error: err.message + hint });
+      const zh = toChineseError(err);
+      const hint = describeAccountProxyNetworkHint(requestAccountId, zh);
+      json(res, zh.includes("未配置") ? 400 : 500, { error: zh + hint });
     }
   }
 });
@@ -769,6 +983,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\n  币安广场批量发帖工具已启动`);
   console.log(`  打开浏览器访问: http://localhost:${PORT}\n`);
+  appendSystemLog("本地服务已启动", { type: "ok", source: "system" });
   startAiScheduler(uploadsDir);
 });
 

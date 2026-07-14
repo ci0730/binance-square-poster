@@ -27,6 +27,50 @@ function run(cmd, args, opts = {}) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+function ensurePlaywrightChromium() {
+  const browsersDir = path.join(root, "build", "ms-playwright");
+  fs.mkdirSync(browsersDir, { recursive: true });
+  process.env.PLAYWRIGHT_BROWSERS_PATH = browsersDir;
+
+  const lockDir = path.join(browsersDir, "__dirlock");
+  if (fs.existsSync(lockDir)) {
+    try {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+
+  const hasChrome = fs.existsSync(browsersDir)
+    ? fs.readdirSync(browsersDir).some((name) => name.startsWith("chromium-"))
+    : false;
+
+  // 国内镜像，避免官方 CDN 卡住
+  const downloadHost =
+    process.env.PLAYWRIGHT_DOWNLOAD_HOST || "https://npmmirror.com/mirrors/playwright";
+
+  if (!hasChrome) {
+    console.log("正在下载内置 Chromium（使用国内镜像，打包后对方无需再装浏览器）...");
+    run(npmCmd, ["exec", "--", "playwright", "install", "chromium"], {
+      env: {
+        PLAYWRIGHT_BROWSERS_PATH: browsersDir,
+        PLAYWRIGHT_DOWNLOAD_HOST: downloadHost,
+      },
+    });
+  } else {
+    console.log(`已找到内置 Chromium 缓存: ${browsersDir}`);
+  }
+
+  const chromiumDirs = fs
+    .readdirSync(browsersDir)
+    .filter((name) => name.startsWith("chromium-") && !name.includes("headless"));
+  if (!chromiumDirs.length) {
+    console.error("构建失败: Playwright Chromium 未安装成功");
+    process.exit(1);
+  }
+  return browsersDir;
+}
+
 function sleep(ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {}
@@ -59,16 +103,25 @@ async function verifyWindowsBuild(outDir) {
     process.exit(1);
   }
 
+  const bundledBrowsers = path.join(winUnpacked, "resources", "ms-playwright");
   const required = [
     path.join(winUnpacked, "ffmpeg.dll"),
     path.join(appRoot, "package.json"),
     path.join(appRoot, "server.js"),
+    bundledBrowsers,
   ];
   for (const file of required) {
     if (!fs.existsSync(file)) {
       console.error(`构建校验失败: 缺少 ${file}`);
       process.exit(1);
     }
+  }
+  const hasChromium = fs
+    .readdirSync(bundledBrowsers)
+    .some((name) => name.startsWith("chromium-") && !name.includes("headless"));
+  if (!hasChromium) {
+    console.error("构建校验失败: resources/ms-playwright 中缺少 chromium");
+    process.exit(1);
   }
 
   const pkg = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
@@ -134,6 +187,7 @@ async function verifyWindowsBuild(outDir) {
 }
 
 ensureElectron();
+ensurePlaywrightChromium();
 
 const electronInRoot = path.join(root, "node_modules", "electron", "package.json");
 if (!fs.existsSync(electronInRoot)) {
@@ -144,7 +198,9 @@ if (!fs.existsSync(electronInRoot)) {
 const builderBin = path.join(root, "node_modules", "electron-builder", "cli.js");
 const outDir = process.env.BUILD_OUTPUT_DIR || `release-${Date.now()}`;
 const prepackaged = process.env.BUILD_PREPACKAGED;
-const args = ["--win", `--config.directories.output=${outDir}`];
+const publishMode =
+  process.env.GH_TOKEN || process.env.RELEASE_PUBLISH === "1" ? "always" : "never";
+const args = ["--win", `--config.directories.output=${outDir}`, `--publish=${publishMode}`];
 if (prepackaged) args.push(`--prepackaged=${prepackaged}`);
 console.log(`输出目录: ${outDir}`);
 run(process.execPath, [builderBin, ...args]);

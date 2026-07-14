@@ -10,12 +10,14 @@
     "desktop": "node scripts/run-desktop.cjs .",
     "desktop:bat": "scripts\\start-desktop.bat",
     "build:win": "node scripts/build-win.cjs",
+    "release:win": "node scripts/build-win.cjs",
     "install:browser": "playwright install chromium"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "playwright": "^1.61.1",
     "socks": "^2.8.9"
   },
@@ -42,9 +44,19 @@
       "server.js",
       "lib/**",
       "public/**",
+      "node_modules/electron-updater/**",
       "node_modules/playwright/**",
       "node_modules/playwright-core/**",
       "node_modules/socks/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/ms-playwright",
+        "to": "ms-playwright",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "extraFiles": [
       {
@@ -72,6 +84,14 @@
       ],
       "language": "2052",
       "include": "build/installer.nsh"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ci0730",
+        "repo": "binance-square-poster",
+        "releaseType": "release"
+      }
+    ]
   }
 }

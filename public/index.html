@@ -10,7 +10,7 @@
       document.documentElement.setAttribute("data-theme", theme);
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=18" />
+  <link rel="stylesheet" href="/style.css?v=22" />
 </head>
 <body>
   <div class="app-shell">
@@ -62,6 +62,18 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 9.5 8.5 3 9.5l5 4.5-1.5 6.5L12 17l5.5 3.5L16 14l5-4.5-6.5-1Z"/></svg>
           </span>
           <span class="nav-label">AI 发布设置</span>
+        </button>
+        <button type="button" class="nav-item" data-view="ai-host">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 10h8M8 14h5"/><path d="M7 4V2M17 4V2"/></svg>
+          </span>
+          <span class="nav-label">AI 托管</span>
+        </button>
+        <button type="button" class="nav-item" data-view="tokens">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10"/><path d="M9.5 9.5c.6-1 1.5-1.5 2.5-1.5 1.4 0 2.5.8 2.5 2s-1.1 2-2.5 2h-1c-1.4 0-2.5.8-2.5 2s1.1 2 2.5 2c1 0 1.9-.5 2.5-1.5"/></svg>
+          </span>
+          <span class="nav-label">代币地址列表</span>
         </button>
         <button type="button" class="nav-item" data-view="accounts">
           <span class="nav-icon" aria-hidden="true">
@@ -178,7 +190,7 @@
               <option value="direct">直连模式（不设置代理）</option>
             </select>
             <div id="globalProxyDetails" class="proxy-details">
-              <input type="text" id="globalProxyQuickInput" placeholder="支持 http://主机:端口:账号:密码 自动拆分" autocomplete="off" />
+              <input type="text" id="globalProxyQuickInput" placeholder="粘贴即可自动拆分，如 127.0.0.1:7897 或 IP:端口:账号:密码" autocomplete="off" />
               <div class="proxy-grid">
                 <label class="field compact-field">
                   <span>代理主机 <em>*</em></span>
@@ -205,12 +217,24 @@
             <button class="btn btn-secondary" id="btnSaveProxy">保存代理</button>
             <button class="btn btn-secondary" id="btnTestNetwork">测试网络</button>
           </div>
-          <p id="dataDirHint" class="hint">数据目录：加载中...</p>
+          <p id="dataDirHint" class="hint">当前数据目录：加载中…</p>
+          <label class="field">
+            <span>自定义数据保存位置</span>
+            <div class="form-row data-dir-row">
+              <input type="text" id="dataDirInput" placeholder="例如 D:\数据\binance-square" autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn btn-secondary" id="btnPickDataDir">浏览…</button>
+              <button type="button" class="btn btn-secondary" id="btnSaveDataDir">应用并迁移</button>
+              <button type="button" class="btn btn-ghost" id="btnResetDataDir">恢复默认</button>
+              <button type="button" class="btn btn-accent hidden" id="btnRestartApp">重启应用</button>
+            </div>
+          </label>
+          <small class="hint">账号、AI 配置、帖子缓存、上传图片等均保存在此。更改目录会自动复制现有数据，需重启后完全生效。</small>
+          <p id="dataDirMessage" class="message"></p>
           <p id="proxyMessage" class="message"></p>
         </div>
         <div class="panel">
           <h3 class="sub-heading">浏览器设置</h3>
-          <p class="hint">拉取广场历史帖子、评论等功能需要启动浏览器。若提示找不到 Chromium，可填写本机 Chrome 或 Edge 的路径；留空则使用 Playwright 自动下载的浏览器（需先执行 npx playwright install chromium）。</p>
+          <p class="hint">拉取广场历史帖子、评论等功能需要启动浏览器。桌面安装版已内置 Chromium，一般无需填写。若仍异常，可填写本机 Chrome 或 Edge 的路径。</p>
           <label class="field">
             <span>浏览器可执行文件路径</span>
             <input type="text" id="browserPathInput" placeholder="例如 C:\Program Files\Google\Chrome\Application\chrome.exe" autocomplete="off" />
@@ -221,6 +245,15 @@
             <button class="btn btn-secondary" id="btnTestBrowser">测试浏览器</button>
           </div>
           <p id="browserMessage" class="message"></p>
+        </div>
+        <div class="panel" id="appUpdatePanel">
+          <h3 class="sub-heading">软件更新</h3>
+          <p class="hint">桌面版启动时会自动检查 GitHub 上的最新版本，也可手动检查更新。</p>
+          <p id="appVersionText" class="hint">当前版本：加载中…</p>
+          <div class="form-row">
+            <button type="button" class="btn btn-secondary" id="btnCheckUpdate">检查更新</button>
+          </div>
+          <p id="appUpdateSettingsMessage" class="message"></p>
         </div>
         <div class="panel">
           <h3 class="sub-heading">发布偏好</h3>
@@ -342,7 +375,7 @@
       <section id="view-ai" class="view-panel hidden">
         <div class="view-header">
           <h2>AI 发布设置</h2>
-          <p class="hint">支持智谱、DeepSeek、OpenAI、通义、Kimi、豆包、Claude、Gemini 等热门 AI</p>
+          <p class="hint">配置 AI 服务商、参考文章风格；自动托管请在「AI 托管」页设置</p>
         </div>
         <div class="panel">
           <p class="hint" id="aiIntroHint">
@@ -352,10 +385,6 @@
           <label class="field inline-toggle">
             <input type="checkbox" id="aiUseNews" checked />
             <span>结合最新加密资讯写帖（自动抓取新闻与行情）</span>
-          </label>
-          <label class="field inline-toggle">
-            <input type="checkbox" id="aiEnabled" />
-            <span>启用 AI 自动托管</span>
           </label>
           <div class="ai-provider-grid">
             <label class="field compact-field">
@@ -376,16 +405,72 @@
               <input type="text" id="aiCustomModelInput" placeholder="自定义模型名，如 gpt-4o-mini" autocomplete="off" />
             </div>
           </div>
-          <div class="form-row form-row-stack">
-            <textarea id="aiTopicInput" rows="2" placeholder="默认主题，例如：加密货币市场观点与行情分析"></textarea>
-            <textarea id="aiTopicsInput" rows="2" placeholder="多主题轮换（每行一个，可选）"></textarea>
+
+          <div class="ai-style-ref-section">
+            <div class="ai-hosted-head">
+              <div>
+                <h3>参考文章风格</h3>
+                <p class="hint">粘贴或上传一篇你喜欢的帖子/文章，保存后在「AI 托管」账号的「风格」里选择「参考·xxx」，AI 会模仿语气与排版写新帖（不抄原文）。</p>
+              </div>
+            </div>
+            <div id="aiStyleRefList" class="ai-style-ref-list"></div>
+            <div class="ai-style-ref-form">
+              <label class="field compact-field">
+                <span>风格名称</span>
+                <input type="text" id="aiStyleRefNameInput" placeholder="如：犀利短评风" maxlength="40" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>参考文章 / 范文</span>
+                <textarea id="aiStyleRefTextInput" rows="5" placeholder="粘贴一篇完整范文（至少 20 字）…"></textarea>
+              </label>
+              <div class="form-row" style="gap:8px; flex-wrap:wrap; align-items:center">
+                <label class="btn btn-ghost btn-sm" style="cursor:pointer">
+                  上传 .txt
+                  <input type="file" id="aiStyleRefFileInput" accept=".txt,text/plain" hidden />
+                </label>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnPreviewAiStyleRef">预览生成</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnAddAiStyleRef">添加为风格</button>
+              </div>
+              <p id="aiStyleRefMessage" class="message"></p>
+              <div id="aiStyleRefPreview" class="ai-style-ref-preview hidden">
+                <div class="ai-style-ref-preview-head">
+                  <strong>AI 模拟预览</strong>
+                  <span class="hint">根据上方范文风格 + 当前行情生成，仅供参考</span>
+                </div>
+                <pre id="aiStyleRefPreviewText" class="ai-style-ref-preview-text"></pre>
+              </div>
+            </div>
           </div>
+
+          <div class="form-row">
+            <button class="btn btn-secondary" id="btnSaveAiSettings">保存 AI 设置</button>
+            <button class="btn btn-secondary" id="btnTestAi">测试 AI</button>
+          </div>
+          <p id="aiSettingsMessage" class="message"></p>
+        </div>
+      </section>
+
+      <!-- AI 托管 -->
+      <section id="view-ai-host" class="view-panel hidden">
+        <div class="view-header">
+          <h2>AI 托管</h2>
+          <p class="hint">选择账号、风格与发帖节奏；保存后后台会按计划自动发帖</p>
+        </div>
+        <div class="panel">
+          <label class="field inline-toggle">
+            <input type="checkbox" id="aiEnabled" />
+            <span>启用 AI 自动托管</span>
+          </label>
 
           <div class="ai-hosted-section">
             <div class="ai-hosted-head">
-              <h3>托管账号</h3>
-              <p class="hint">勾选要托管的账号，每个账号可指定 AI、目标代币、观点倾向与文案风格。自动托管将轮流为各账号发帖。</p>
+              <div>
+                <h3>托管账号报表</h3>
+                <p class="hint">一行一个账号。风格 / AI / 观点可直接下拉修改；点「代币」可展开目标代币设置。改完后点「保存 AI 配置」。</p>
+              </div>
+              <input type="search" id="aiHostedSearchInput" class="ai-hosted-search" placeholder="搜索账号名称…" autocomplete="off" />
             </div>
+            <div id="aiHostedSummary" class="ai-hosted-summary"></div>
             <div id="aiHostedAccountsList" class="ai-hosted-accounts-list"></div>
           </div>
 
@@ -405,13 +490,30 @@
               <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
             </label>
           </div>
+          <div class="form-row">
+            <label class="inline-label">
+              发帖间隔
+              <input type="number" id="aiPublishDelayMinInput" value="3" min="1" max="600" />
+              ～
+              <input type="number" id="aiPublishDelayMaxInput" value="8" min="1" max="600" />
+              秒
+            </label>
+          </div>
+          <p class="hint">同一次托管连发多条，或多账号轮发时，每条之间随机等待上述秒数再继续</p>
           <label class="field inline-toggle">
             <input type="checkbox" id="aiAutoPublish" checked />
             <span>生成后自动发布（关闭则仅生成草稿）</span>
           </label>
+          <label class="field inline-toggle">
+            <input type="checkbox" id="aiAttachImages" checked />
+            <span>自动发帖时附带相关代币图片（按重点代币下载公开图标，失败则改为纯文字）</span>
+          </label>
+          <label class="field inline-toggle">
+            <input type="checkbox" id="aiPreventDuplicate" checked />
+            <span>不能发重复（与已发帖子相似时自动重试或跳过）</span>
+          </label>
           <div class="form-row">
             <button class="btn btn-secondary" id="btnSaveAiConfig">保存 AI 配置</button>
-            <button class="btn btn-secondary" id="btnTestAi">测试 AI</button>
             <button class="btn btn-secondary" id="btnAiGenerateDraft">立即生成草稿</button>
             <button class="btn btn-accent" id="btnAiRunNow">开启并立即托管</button>
             <button class="btn btn-secondary btn-danger hidden" id="btnAiCancelHosting">取消托管</button>
@@ -419,6 +521,61 @@
           <p id="aiHostingHint" class="message info hidden"></p>
           <p id="aiStatusText" class="message info">AI 托管未配置</p>
           <p id="aiMessage" class="message"></p>
+        </div>
+      </section>
+
+      <!-- 代币地址列表 -->
+      <section id="view-tokens" class="view-panel hidden">
+        <div class="view-header settings-header">
+          <div>
+            <h2>代币地址列表</h2>
+            <p class="hint">用币安公开 API 同步全部现货 + Alpha，并自动填写合约地址。只有你手动改过的合约不会被覆盖；现货/合约用左侧小标签区分。</p>
+          </div>
+          <div class="form-row" style="gap:8px; flex-wrap:wrap">
+            <button type="button" class="btn btn-secondary btn-sm" id="btnSyncBinanceTokens">从币安同步全部</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btnRefreshTokenQuotes">刷新报价</button>
+            <button type="button" class="btn btn-primary btn-sm" id="btnAddToken">+ 添加代币</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="account-toolbar token-registry-toolbar">
+            <div class="account-toolbar-search">
+              <input type="search" id="tokenSearchInput" placeholder="搜索符号、名称或合约地址…" autocomplete="off" />
+            </div>
+            <div class="token-refresh-settings">
+              <label class="inline-label">
+                自动刷新
+                <input type="number" id="tokenRefreshIntervalInput" value="60" min="0" max="3600" step="1" title="单位：秒；0=关闭" />
+                秒
+              </label>
+              <small class="hint">0 关闭；最小 15 秒</small>
+              <button type="button" class="btn btn-ghost btn-sm" id="btnSaveTokenRefresh">保存</button>
+            </div>
+          </div>
+          <div class="token-registry-meta">
+            <span id="tokenRegistryCountText" class="hint">共 0 个代币</span>
+            <div id="tokenRegistryPagination" class="account-pagination"></div>
+          </div>
+          <div class="token-registry-wrap">
+            <table class="ai-report-table token-registry-table" id="tokenRegistryTable">
+              <thead>
+                <tr>
+                  <th>启用</th>
+                  <th>类型</th>
+                  <th>符号</th>
+                  <th>名称</th>
+                  <th>币安交易对</th>
+                  <th>合约地址</th>
+                  <th>网络</th>
+                  <th class="num">当前价</th>
+                  <th class="num">24h</th>
+                  <th class="col-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="tokenRegistryBody"></tbody>
+            </table>
+          </div>
+          <p id="tokenRegistryMessage" class="message"></p>
         </div>
       </section>
 
@@ -458,11 +615,27 @@
       <!-- 互动数据采集查看 -->
       <section id="view-monitor" class="view-panel hidden">
         <div class="view-header">
-          <h2>互动数据采集查看</h2>
-          <p class="hint">定时刷新浏览/点赞/评论数据，查看互动提醒</p>
+          <div>
+            <h2>互动数据采集查看</h2>
+            <p class="hint">选择账号后查看该号的浏览/点赞/评论；可定时刷新并接收互动提醒</p>
+          </div>
         </div>
         <div class="panel">
           <div class="monitor-bar">
+            <label class="monitor-item monitor-account-field">
+              <span>查看账号</span>
+              <select id="monitorAccountSelect" class="account-select" title="选择要查看互动数据的账号"></select>
+            </label>
+            <label class="monitor-item monitor-search-field">
+              <span>搜索帖子</span>
+              <input
+                type="search"
+                id="monitorSearchInput"
+                class="monitor-search-input"
+                placeholder="标题 / 正文 / 链接…"
+                autocomplete="off"
+              />
+            </label>
             <label class="monitor-item">
               <input type="checkbox" id="autoRefreshEnabled" />
               定时刷新
@@ -488,7 +661,7 @@
           </div>
           <div id="alertList" class="alert-list"></div>
         </section>
-        <p class="hint section-hint">下方为已发布帖子，可展开查看评论与互动数据。</p>
+        <p id="monitorSectionHint" class="hint section-hint">请选择上方「查看账号」，下方将只显示该账号已发布帖子的互动数据。</p>
         <section class="post-list post-list-secondary" id="monitorPostList"></section>
       </section>
 
@@ -595,6 +768,53 @@
   </dialog>
 
   <!-- Account Modal -->
+  <dialog id="tokenModal" class="modal">
+    <form id="tokenForm">
+      <h2 id="tokenModalTitle">添加代币</h2>
+      <input type="hidden" id="tokenEditId" value="" />
+      <label class="field">
+        <span>代币符号 <em>*</em></span>
+        <input type="text" id="tokenSymbolInput" placeholder="如 FIL" required autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>显示名称</span>
+        <input type="text" id="tokenNameInput" placeholder="如 Filecoin" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>币安交易对</span>
+        <input type="text" id="tokenBinanceSymbolInput" placeholder="默认 FILUSDT" autocomplete="off" />
+        <small class="hint">现货拉取用此交易对；留空则按 符号+USDT</small>
+      </label>
+      <label class="field">
+        <span>合约地址</span>
+        <input type="text" id="tokenContractInput" placeholder="Alpha / 同名代币混淆时填写" autocomplete="off" />
+      </label>
+      <div class="form-row form-row-stack">
+        <label class="field compact-field">
+          <span>链</span>
+          <select id="tokenChainSelect" class="account-select"></select>
+        </label>
+        <label class="field compact-field">
+          <span>价格来源</span>
+          <select id="tokenSourceSelect" class="account-select"></select>
+        </label>
+      </div>
+      <label class="field">
+        <span>备注</span>
+        <input type="text" id="tokenNotesInput" placeholder="可选" autocomplete="off" />
+      </label>
+      <label class="field inline-toggle">
+        <input type="checkbox" id="tokenEnabledInput" checked />
+        <span>启用（AI 写帖使用）</span>
+      </label>
+      <div class="form-row">
+        <button type="submit" class="btn btn-primary">保存</button>
+        <button type="button" class="btn btn-ghost" id="btnCancelToken">取消</button>
+      </div>
+      <p id="tokenModalMessage" class="message"></p>
+    </form>
+  </dialog>
+
   <dialog id="accountModal" class="modal">
     <form id="accountForm">
       <h2 id="accountModalTitle">添加账号</h2>
@@ -607,14 +827,14 @@
 
       <label class="field">
         <span>API Key <em id="apiKeyRequired">*</em></span>
-        <input type="password" id="accountApiKeyInput" placeholder="粘贴 Square OpenAPI Key" autocomplete="off" />
+        <input type="password" id="accountApiKeyInput" name="square-api-key" placeholder="粘贴 Square OpenAPI Key" autocomplete="new-password" />
         <small id="apiKeyHint" class="hint">编辑已有账号时留空表示不修改</small>
       </label>
 
       <label class="field">
         <span>币安 Cookie（可选，与 API Key 同账号）</span>
-        <textarea id="accountCookieInput" rows="3" placeholder="在已登录 binance.com 页面 Console 输入 document.cookie 复制结果"></textarea>
-        <small class="hint">配置 Cookie 可立即拉取历史帖子；不配置则需先发布 1 条帖子，系统会自动识别用户名</small>
+        <textarea id="accountCookieInput" rows="3" placeholder="在已登录 binance.com 页面 Console 输入 document.cookie 复制结果" autocomplete="off"></textarea>
+        <small id="accountCookieHint" class="hint">配置 Cookie 可立即拉取历史帖子；不配置则需先发布 1 条帖子，系统会自动识别用户名</small>
       </label>
 
       <label class="field">
@@ -639,7 +859,7 @@
           </select>
         </label>
         <div id="accountProxyDetails" class="proxy-details hidden">
-          <input type="text" id="accountProxyQuickInput" placeholder="快速粘贴，如 socks5://160.22.172.241:31176:账号:密码" autocomplete="off" />
+          <input type="text" id="accountProxyQuickInput" placeholder="粘贴即可自动拆分，如 160.22.172.7:10106:账号:密码" autocomplete="off" />
           <div class="proxy-grid">
             <label class="field compact-field">
               <span>代理主机 <em>*</em></span>
@@ -655,7 +875,7 @@
             </label>
             <label class="field compact-field">
               <span>代理密码</span>
-              <input type="password" id="accountProxyPassInput" placeholder="选填" autocomplete="off" />
+              <input type="password" id="accountProxyPassInput" name="account-proxy-pass" placeholder="选填" autocomplete="new-password" />
             </label>
           </div>
           <div class="form-row">
@@ -781,6 +1001,27 @@
     </form>
   </dialog>
 
+  <!-- App Update Modal -->
+  <dialog id="updateModal" class="modal">
+    <div class="update-modal">
+      <h2 id="updateModalTitle">发现新版本</h2>
+      <p id="updateModalVersion" class="hint"></p>
+      <div id="updateModalNotes" class="update-notes"></div>
+      <div id="updateProgressWrap" class="update-progress-wrap hidden">
+        <div class="update-progress-bar">
+          <div id="updateProgressFill" class="update-progress-fill"></div>
+        </div>
+        <p id="updateProgressText" class="hint">正在下载更新…</p>
+      </div>
+      <p id="updateModalMessage" class="message"></p>
+      <div class="modal-actions" id="updateModalActions">
+        <button type="button" class="btn btn-ghost" id="btnUpdateLater">稍后提醒</button>
+        <button type="button" class="btn btn-accent" id="btnUpdateDownload">立即更新</button>
+        <button type="button" class="btn btn-accent hidden" id="btnUpdateInstall">重启并安装</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Legal / Info Modal -->
   <dialog id="legalModal" class="modal modal-wide">
     <div class="legal-modal">
@@ -792,6 +1033,6 @@
     </div>
   </dialog>
 
-  <script src="/app.js?v=52"></script>
+  <script src="/app.js?v=53"></script>
 </body>
 </html>
