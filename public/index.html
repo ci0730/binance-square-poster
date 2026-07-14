@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>币安广场批量发帖工具</title>
   <script>
     (function () {
@@ -10,7 +11,7 @@
       document.documentElement.setAttribute("data-theme", theme);
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=22" />
+  <link rel="stylesheet" href="/style.css?v=23" />
 </head>
 <body>
   <div class="app-shell">
@@ -85,7 +86,7 @@
           <span class="nav-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20V10M8 20V4M13 20v-8M18 20v-12M21 20H3"/></svg>
           </span>
-          <span class="nav-label">互动数据采集查看</span>
+          <span class="nav-label">互动数据</span>
         </button>
         <button type="button" class="nav-item" data-view="published">
           <span class="nav-icon nav-icon-binance" aria-hidden="true">
@@ -125,16 +126,16 @@
       <section id="view-home" class="view-panel">
         <div class="view-header">
           <h2>首页</h2>
-          <p class="hint">当前账号状态与已发布帖子概览</p>
+          <p class="hint">查看当前账号状态与已发布帖子概览</p>
         </div>
         <div class="home-grid">
           <div class="panel home-account-panel">
             <div class="home-panel-head">
-              <h3>当前账户</h3>
+              <h3>当前账号</h3>
               <button type="button" class="btn btn-ghost btn-sm" id="btnHomeManageAccount">管理账号</button>
             </div>
             <div id="homeAccountCard" class="home-account-card">
-              <p class="hint">加载中...</p>
+              <p class="hint">加载中…</p>
             </div>
           </div>
           <div class="panel home-stats-panel">
@@ -175,11 +176,11 @@
       <section id="view-settings" class="view-panel hidden">
         <div class="view-header">
           <h2>设置</h2>
-          <p class="hint">全局网络与发布偏好</p>
+          <p class="hint">配置全局网络、浏览器与发布偏好</p>
         </div>
         <div class="panel">
           <h3 class="sub-heading">网络代理</h3>
-          <p class="hint">访问 binance.com 需要网络可达。软件会自动读取 Windows 系统代理（梯子开启「系统代理」时生效）；也可手动填写。未单独配置代理的账号将统一使用此处设置。</p>
+          <p class="hint">访问币安需网络可达。软件会自动读取 Windows 系统代理；也可手动填写。账号若未单独配置代理，将统一使用下方设置。</p>
           <div class="field proxy-config-panel">
             <span>全局代理设置</span>
             <select id="globalProxyTypeSelect" class="account-select proxy-type-select">
@@ -210,7 +211,7 @@
                 </label>
               </div>
             </div>
-            <small id="globalProxyHint" class="hint">账号管理中选择「使用全局代理」的账号，发帖与拉取历史均走此处配置。若梯子已开系统代理，可留空主机端口，软件会自动读取。</small>
+            <small id="globalProxyHint" class="hint">在「账号管理」中选择「使用全局代理」的账号，发帖与拉取历史均走此处配置。若梯子已开启系统代理，可留空主机与端口，软件会自动读取。</small>
           </div>
           <p id="systemProxyHint" class="hint message info hidden"></p>
           <div class="form-row">
@@ -228,13 +229,13 @@
               <button type="button" class="btn btn-accent hidden" id="btnRestartApp">重启应用</button>
             </div>
           </label>
-          <small class="hint">账号、AI 配置、帖子缓存、上传图片等均保存在此。更改目录会自动复制现有数据，需重启后完全生效。</small>
+          <small class="hint">账号、AI 配置、帖子缓存与上传图片均保存在此。更改目录时会自动复制现有数据，重启后完全生效。</small>
           <p id="dataDirMessage" class="message"></p>
           <p id="proxyMessage" class="message"></p>
         </div>
         <div class="panel">
           <h3 class="sub-heading">浏览器设置</h3>
-          <p class="hint">拉取广场历史帖子、评论等功能需要启动浏览器。桌面安装版已内置 Chromium，一般无需填写。若仍异常，可填写本机 Chrome 或 Edge 的路径。</p>
+          <p class="hint">拉取广场历史、评论等功能需启动浏览器。安装版已内置 Chromium，一般无需填写；若异常，可指定本机 Chrome 或 Edge 路径。</p>
           <label class="field">
             <span>浏览器可执行文件路径</span>
             <input type="text" id="browserPathInput" placeholder="例如 C:\Program Files\Google\Chrome\Application\chrome.exe" autocomplete="off" />
@@ -245,15 +246,6 @@
             <button class="btn btn-secondary" id="btnTestBrowser">测试浏览器</button>
           </div>
           <p id="browserMessage" class="message"></p>
-        </div>
-        <div class="panel" id="appUpdatePanel">
-          <h3 class="sub-heading">软件更新</h3>
-          <p class="hint">桌面版启动时会自动检查 GitHub 上的最新版本，也可手动检查更新。</p>
-          <p id="appVersionText" class="hint">当前版本：加载中…</p>
-          <div class="form-row">
-            <button type="button" class="btn btn-secondary" id="btnCheckUpdate">检查更新</button>
-          </div>
-          <p id="appUpdateSettingsMessage" class="message"></p>
         </div>
         <div class="panel">
           <h3 class="sub-heading">发布偏好</h3>
@@ -272,6 +264,15 @@
             <input type="checkbox" id="notifyBrowser" checked />
             启用浏览器通知（互动提醒）
           </label>
+        </div>
+        <div class="panel" id="appUpdatePanel">
+          <h3 class="sub-heading">软件更新</h3>
+          <p class="hint">桌面版启动时会自动检查 GitHub 最新版本，也可手动检查更新。</p>
+          <p id="appVersionText" class="hint">当前版本：加载中…</p>
+          <div class="form-row">
+            <button type="button" class="btn btn-secondary" id="btnCheckUpdate">检查更新</button>
+          </div>
+          <p id="appUpdateSettingsMessage" class="message"></p>
         </div>
       </section>
 
@@ -375,11 +376,11 @@
       <section id="view-ai" class="view-panel hidden">
         <div class="view-header">
           <h2>AI 发布设置</h2>
-          <p class="hint">配置 AI 服务商、参考文章风格；自动托管请在「AI 托管」页设置</p>
+          <p class="hint">配置 AI 服务商与参考风格；自动托管请在「AI 托管」页设置</p>
         </div>
         <div class="panel">
           <p class="hint" id="aiIntroHint">
-            在「API 管理」可添加多个 AI API；此处可快速编辑默认 AI。结合最新资讯自动生成代币帖子，并用 $BTC $SOL 等标签生成底部可点击的代币按钮。
+            在「API 管理」可添加多个 AI；此处可编辑默认 AI。结合最新资讯自动生成代币帖子，并以 $BTC、$SOL 等标签生成底部可点击按钮。
             <a id="aiKeyHelpLink" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
           </p>
           <label class="field inline-toggle">
@@ -410,7 +411,7 @@
             <div class="ai-hosted-head">
               <div>
                 <h3>参考文章风格</h3>
-                <p class="hint">粘贴或上传一篇你喜欢的帖子/文章，保存后在「AI 托管」账号的「风格」里选择「参考·xxx」，AI 会模仿语气与排版写新帖（不抄原文）。</p>
+                <p class="hint">粘贴或上传一篇范文，保存后在「AI 托管」选择「参考·xxx」，AI 将模仿语气与排版写新帖（不抄原文）。</p>
               </div>
             </div>
             <div id="aiStyleRefList" class="ai-style-ref-list"></div>
@@ -454,7 +455,7 @@
       <section id="view-ai-host" class="view-panel hidden">
         <div class="view-header">
           <h2>AI 托管</h2>
-          <p class="hint">选择账号、风格与发帖节奏；保存后后台会按计划自动发帖</p>
+          <p class="hint">选择账号、风格与发帖节奏；保存后后台将按计划自动发帖</p>
         </div>
         <div class="panel">
           <label class="field inline-toggle">
@@ -465,8 +466,8 @@
           <div class="ai-hosted-section">
             <div class="ai-hosted-head">
               <div>
-                <h3>托管账号报表</h3>
-                <p class="hint">一行一个账号。风格 / AI / 观点可直接下拉修改；点「代币」可展开目标代币设置。改完后点「保存 AI 配置」。</p>
+                <h3>托管账号列表</h3>
+                <p class="hint">一行一个账号。可直接修改风格、AI 与观点；点「代币」展开目标代币。修改后请点击「保存 AI 配置」。</p>
               </div>
               <input type="search" id="aiHostedSearchInput" class="ai-hosted-search" placeholder="搜索账号名称…" autocomplete="off" />
             </div>
@@ -476,41 +477,41 @@
 
           <div class="form-row">
             <label class="inline-label">
-              间隔
+              运行间隔
               <input type="number" id="aiIntervalInput" value="60" min="5" max="1440" />
               分钟
             </label>
             <label class="inline-label">
-              每次
+              每次条数
               <input type="number" id="aiPostsPerRunInput" value="1" min="1" max="5" />
               条
             </label>
             <label class="inline-label">
-              日上限
+              每日上限
               <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
             </label>
           </div>
           <div class="form-row">
             <label class="inline-label">
-              发帖间隔
+              条间间隔
               <input type="number" id="aiPublishDelayMinInput" value="3" min="1" max="600" />
               ～
               <input type="number" id="aiPublishDelayMaxInput" value="8" min="1" max="600" />
               秒
             </label>
           </div>
-          <p class="hint">同一次托管连发多条，或多账号轮发时，每条之间随机等待上述秒数再继续</p>
+          <p class="hint">同一次托管连发多条，或多账号轮发时，每条之间在上述秒数范围内随机等待</p>
           <label class="field inline-toggle">
             <input type="checkbox" id="aiAutoPublish" checked />
-            <span>生成后自动发布（关闭则仅生成草稿）</span>
+            <span>生成后自动发布（关闭则仅保存为草稿）</span>
           </label>
           <label class="field inline-toggle">
             <input type="checkbox" id="aiAttachImages" checked />
-            <span>自动发帖时附带相关代币图片（按重点代币下载公开图标，失败则改为纯文字）</span>
+            <span>自动附带相关代币图片（按重点代币下载公开图标，失败则发纯文字）</span>
           </label>
           <label class="field inline-toggle">
             <input type="checkbox" id="aiPreventDuplicate" checked />
-            <span>不能发重复（与已发帖子相似时自动重试或跳过）</span>
+            <span>避免重复发帖（与已发内容相似时自动重试或跳过）</span>
           </label>
           <div class="form-row">
             <button class="btn btn-secondary" id="btnSaveAiConfig">保存 AI 配置</button>
@@ -519,7 +520,7 @@
             <button class="btn btn-secondary btn-danger hidden" id="btnAiCancelHosting">取消托管</button>
           </div>
           <p id="aiHostingHint" class="message info hidden"></p>
-          <p id="aiStatusText" class="message info">AI 托管未配置</p>
+          <p id="aiStatusText" class="message info">尚未配置 AI 托管</p>
           <p id="aiMessage" class="message"></p>
         </div>
       </section>
@@ -616,8 +617,8 @@
       <section id="view-monitor" class="view-panel hidden">
         <div class="view-header">
           <div>
-            <h2>互动数据采集查看</h2>
-            <p class="hint">选择账号后查看该号的浏览/点赞/评论；可定时刷新并接收互动提醒</p>
+            <h2>互动数据</h2>
+            <p class="hint">按账号查看浏览、点赞与评论；支持定时刷新与互动提醒</p>
           </div>
         </div>
         <div class="panel">
@@ -661,7 +662,7 @@
           </div>
           <div id="alertList" class="alert-list"></div>
         </section>
-        <p id="monitorSectionHint" class="hint section-hint">请选择上方「查看账号」，下方将只显示该账号已发布帖子的互动数据。</p>
+        <p id="monitorSectionHint" class="hint section-hint">请先选择上方「查看账号」，下方将显示该账号已发布帖子的互动数据。</p>
         <section class="post-list post-list-secondary" id="monitorPostList"></section>
       </section>
 
@@ -670,7 +671,7 @@
         <div class="view-header settings-header">
           <div>
             <h2>已发布帖子</h2>
-            <p class="hint">本地已发布记录与广场历史帖子拉取</p>
+            <p class="hint">本地已发布记录，以及从广场拉取的历史帖子</p>
           </div>
           <div class="header-actions">
             <select id="historyAccountSelect" class="account-select" title="选择要拉取历史帖子的账号"></select>
@@ -687,7 +688,7 @@
       <section id="view-logs" class="view-panel hidden">
         <div class="view-header">
           <h2>日志</h2>
-          <p class="hint">发布进度、AI 托管与操作记录</p>
+          <p class="hint">发布进度、AI 托管与系统操作记录</p>
         </div>
         <section id="progressPanel" class="panel progress-panel">
           <h3>发布进度</h3>
@@ -845,7 +846,7 @@
 
       <div class="field proxy-config-panel account-proxy-panel">
         <span>代理 IP 设置</span>
-        <p class="hint">每个账号可绑定独立代理 IP。发帖、拉取历史时，该账号会走自己的代理，不影响其他账号。</p>
+        <p class="hint">每个账号可绑定独立代理。发帖与拉取历史时，该账号走自己的代理，互不影响。</p>
         <div class="proxy-mode-tip" id="accountProxyModeTip">当前：使用全局代理（来自「设置」页）</div>
         <label class="field compact-field">
           <span>代理方式</span>
@@ -882,7 +883,7 @@
             <button type="button" class="btn btn-secondary btn-sm" id="btnTestAccountProxy">检测代理</button>
           </div>
         </div>
-        <small id="accountProxyHint" class="hint">选择「自定义 Socks5/HTTP」后填写代理 IP 与端口，本账号发布时将固定走该代理。</small>
+        <small id="accountProxyHint" class="hint">选择「自定义 Socks5/HTTP」并填写 IP 与端口后，本账号将固定走该代理；选「使用全局代理」则走设置页配置。</small>
       </div>
 
       <p id="accountFormMessage" class="message"></p>
@@ -921,9 +922,9 @@
   <!-- Proxy Setup Guide -->
   <dialog id="proxySetupModal" class="modal">
     <div class="proxy-setup-modal">
-      <h2>首次使用：配置网络代理</h2>
+      <h2>首次使用 · 配置网络</h2>
       <p class="hint">
-        本软件需要连接 <strong>binance.com</strong> 才能发帖。国内网络通常无法直连，请先确保梯子已开启，再完成以下任一步骤。
+        本软件需连接 <strong>binance.com</strong> 才能正常使用。国内网络通常无法直连，请先开启梯子，再完成以下任一步骤。
       </p>
       <div id="proxySetupSystemBlock" class="proxy-setup-block hidden">
         <p class="proxy-setup-title">已检测到 Windows 系统代理</p>
@@ -1033,6 +1034,6 @@
     </div>
   </dialog>
 
-  <script src="/app.js?v=53"></script>
+  <script src="/app.js?v=55"></script>
 </body>
 </html>

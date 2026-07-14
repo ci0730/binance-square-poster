@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Web UI for batch publishing posts to Binance Square",
   "author": "Binance Square Poster",
   "type": "module",

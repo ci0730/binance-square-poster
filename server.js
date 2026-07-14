@@ -12,6 +12,7 @@ import {
   saveProxy,
   saveProxyConfig,
   getGlobalProxyConfigPublic,
+  getGlobalProxyConfig,
   mergeGlobalProxyCredentials,
   applySystemProxyConfig,
   dismissProxyGuide,
@@ -36,7 +37,7 @@ import {
   mergeAccountProxyCredentials,
   describeAccountProxyNetworkHint,
 } from "./lib/accounts.js";
-import { normalizeProxyConfig } from "./lib/proxy-config.js";
+import { normalizeProxyConfig, isBlankProxyPassword } from "./lib/proxy-config.js";
 import { probeProxy } from "./lib/proxy-probe.js";
 import { fetchPostStatsByRef } from "./lib/square-stats.js";
 import { fetchPostCommentsByRef, closeBrowserClient, testBrowserLaunch } from "./lib/square-browser.js";
@@ -507,18 +508,22 @@ const server = http.createServer(async (req, res) => {
         proxyConfig = mergeGlobalProxyCredentials(proxyConfig);
       }
       if (["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
-        // 留空表示用已保存密码，但库里没有时可明确提示（避免误报超时）
-        if (
-          body?.useSavedProxyPassword &&
-          !String(proxyConfig.password || "").trim()
-        ) {
-          const scope = body?.accountId ? "该账号" : "全局";
-          json(res, 400, {
-            ok: false,
-            stage: "proxy",
-            message: `未找到${scope}已保存的代理密码。请在「代理密码」中重新输入后再检测，并点保存。`,
-          });
-          return;
+        // 留空密码仅在有账号/已保存密码/填写了用户名时才报错；无鉴权本地代理可直接测
+        if (body?.useSavedProxyPassword && !String(proxyConfig.password || "").trim()) {
+          const stored = body?.accountId
+            ? normalizeProxyConfig(getAccount(body.accountId)?.proxyConfig)
+            : getGlobalProxyConfig();
+          const storedHasPassword = !isBlankProxyPassword(stored.password);
+          const username = String(proxyConfig.username || stored.username || "").trim();
+          if (storedHasPassword || username) {
+            const scope = body?.accountId ? "该账号" : "全局";
+            json(res, 400, {
+              ok: false,
+              stage: "proxy",
+              message: `未找到${scope}已保存的代理密码。请在「代理密码」中重新输入后再检测，并点保存。`,
+            });
+            return;
+          }
         }
         const result = await probeProxy(proxyConfig);
         json(res, result.ok ? 200 : 400, result);

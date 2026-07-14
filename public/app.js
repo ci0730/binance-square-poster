@@ -19,7 +19,7 @@ let selectedMonitorAccountId = "";
 /** 互动页搜索关键词 */
 let monitorSearchQuery = "";
 
-const NO_HISTORY_DETECTED_MSG = "未检测到该账户历史帖子，请发布一条帖子后再来获取";
+const NO_HISTORY_DETECTED_MSG = "未检测到该账号的历史帖子，请先发布一条后再试";
 const HISTORY_FETCH_CONFIRM_MSG =
   "拉取广场历史帖子需要先成功发布至少 1 条帖子，系统才能识别账号并获取历史记录；否则无法拉取。\n\n若尚未发帖，请先发布一条后再来拉取。\n也可在「账号管理」中配置 Cookie 或填写广场用户名，无需发帖即可拉取。\n\n确定继续拉取吗？";
 
@@ -846,23 +846,23 @@ function updateProxyDetailsVisibility(scope = "account") {
   if (!hint) return;
   if (scope === "global") {
     if (type === "direct") {
-      hint.textContent = "直连模式下，所有使用全局代理的账号将直接走本地网络。";
+      hint.textContent = "直连模式下，使用全局代理的账号将走本地网络。";
     } else if (type === "ssh") {
-      hint.textContent = "SSH 代理通过 Socks5 协议连接。账号管理中选择「使用全局代理」的账号均走此处配置。";
+      hint.textContent = "SSH 隧道经 Socks5 连接。使用全局代理的账号均走此处配置。";
     } else {
-      hint.textContent = "账号管理中选择「使用全局代理」的账号，发帖与拉取历史均走此处配置。";
+      hint.textContent = "使用全局代理的账号，发帖与拉取历史均走此处配置。";
     }
     return;
   }
   if (type === "direct") {
-    hint.textContent = "直连模式将使用本地网络发帖、拉取，不经过任何代理。";
+    hint.textContent = "直连模式：不走任何代理，使用本机网络。";
   } else if (type === "global") {
-    hint.textContent = "将使用「设置」页中的全局代理。如需独立 IP，请选择「自定义 Socks5/HTTP 代理 IP」。";
+    hint.textContent = "将使用「设置」页的全局代理。如需独立 IP，请选择「自定义 Socks5/HTTP 代理 IP」。";
   } else if (type === "ssh") {
-    hint.textContent = "SSH 隧道通过 Socks5 连接。填写隧道主机、端口与账号密码后，本账号固定走该代理。";
+    hint.textContent = "SSH 隧道经 Socks5 连接。填写主机、端口与账号密码后，本账号固定走该代理。";
   } else {
     hint.textContent =
-      "填写代理 IP 与端口后保存。点「检测代理」只验证代理出网；点「验证 Key」才会经代理连接币安。";
+      "填写代理 IP 与端口后保存。点「检测代理」验证出网；点「验证 Key」经代理连接币安。";
   }
   if (scope === "account") updateAccountProxyModeTip(type);
 }
@@ -1311,12 +1311,12 @@ function updateSystemProxyHint(proxyConfig) {
   const el = $("#systemProxyHint");
   if (!el) return;
   if (proxyConfig?.proxySource === "system" && proxyConfig.systemProxy) {
-    el.textContent = `已自动使用 Windows 系统代理：${proxyConfig.systemProxy.host}:${proxyConfig.systemProxy.port}（梯子已开系统代理时无需手动填写，也可保存为固定配置）`;
+    el.textContent = `已自动使用 Windows 系统代理（${proxyConfig.systemProxy.host}:${proxyConfig.systemProxy.port}）。梯子开启系统代理时可不手动填写，也可保存为固定配置。`;
     el.classList.remove("hidden");
     return;
   }
   if (proxyConfig?.proxySource === "none") {
-    el.textContent = "未检测到可用代理。请开启梯子并打开「系统代理」，或在下方手动填写主机和端口。";
+    el.textContent = "未检测到可用代理。请开启梯子并启用「系统代理」，或在下方手动填写主机与端口。";
     el.classList.remove("hidden");
     return;
   }
@@ -2158,8 +2158,13 @@ async function testAccountProxy() {
     showAccountFormMessage("请填写代理主机和端口", "err");
     return;
   }
-  if (useSavedProxyPassword && accountId && existing?.proxyConfig?.hasPassword === false) {
-    showAccountFormMessage("该账号尚未保存代理密码，请填写密码后再检测", "err");
+  if (
+    useSavedProxyPassword &&
+    accountId &&
+    existing?.proxyConfig?.hasPassword === false &&
+    String(proxyConfig.username || "").trim()
+  ) {
+    showAccountFormMessage("已填写代理账号但未保存密码，请填写密码后再检测", "err");
     return;
   }
   const prevText = btn?.textContent || "检测代理";
@@ -2168,7 +2173,9 @@ async function testAccountProxy() {
     btn.textContent = "检测中…";
   }
   showAccountFormMessage(
-    useSavedProxyPassword && accountId ? "正在用已保存的代理密码快速检测…" : "正在快速检测代理出网…",
+    useSavedProxyPassword && accountId && existing?.proxyConfig?.hasPassword
+      ? "正在用已保存的代理密码快速检测…"
+      : "正在快速检测代理出网…",
     "info",
   );
   try {
@@ -2178,7 +2185,9 @@ async function testAccountProxy() {
       body: JSON.stringify({
         proxyConfig,
         accountId,
-        useSavedProxyPassword: Boolean(useSavedProxyPassword && accountId),
+        useSavedProxyPassword: Boolean(
+          useSavedProxyPassword && accountId && existing?.proxyConfig?.hasPassword,
+        ),
       }),
     });
     const data = await res.json();
@@ -2309,7 +2318,7 @@ async function saveProxy() {
       globalProxyConfig = data.proxyConfig;
       applyProxyToUI("global", data.proxyConfig);
     }
-    showProxyMessage(res.ok ? "全局代理已保存，使用全局代理的账号将统一走此配置" : data.error || "保存失败", res.ok ? "ok" : "err");
+    showProxyMessage(res.ok ? "全局代理已保存" : data.error || "保存失败", res.ok ? "ok" : "err");
     updateApiStatusCard({ proxyConfig: data.proxyConfig || globalProxyConfig });
   } catch {
     showProxyMessage("无法连接本地服务", "err");
@@ -2481,7 +2490,7 @@ function openUpdateModal(info = {}) {
   const notesEl = $("#updateModalNotes");
   if (notesEl) {
     const notes = String(info.releaseNotes || "").trim();
-    notesEl.textContent = notes || "建议更新到最新版以获得修复与功能改进。";
+    notesEl.textContent = notes || "建议更新至最新版，以获得功能改进与问题修复。";
     notesEl.classList.toggle("hidden", !notesEl.textContent);
   }
   $("#updateProgressWrap")?.classList.add("hidden");
@@ -2615,9 +2624,17 @@ function initDesktopUpdater() {
 async function testNetwork() {
   const proxyConfig = collectProxyFromUI("global");
   const useSavedProxyPassword = !Object.prototype.hasOwnProperty.call(proxyConfig, "password");
+  if (
+    useSavedProxyPassword &&
+    globalProxyConfig?.hasPassword === false &&
+    String(proxyConfig.username || "").trim()
+  ) {
+    showProxyMessage("已填写代理账号但未填写密码。请填写密码，或清空账号后再检测。", "err");
+    return;
+  }
   showProxyMessage(
     ["http", "https", "socks5", "ssh"].includes(proxyConfig.type)
-      ? useSavedProxyPassword
+      ? useSavedProxyPassword && globalProxyConfig?.hasPassword
         ? "正在用已保存的代理密码快速检测…"
         : "正在快速检测代理出网…"
       : "正在测试网络…",
@@ -2629,7 +2646,7 @@ async function testNetwork() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proxyConfig,
-        useSavedProxyPassword: Boolean(useSavedProxyPassword),
+        useSavedProxyPassword: Boolean(useSavedProxyPassword && globalProxyConfig?.hasPassword),
       }),
     });
     const data = await res.json();
@@ -3986,9 +4003,9 @@ function renderAiStatus(data) {
     data.providerLabel ? `服务商: ${data.providerLabel}` : "",
     data.model ? `模型: ${data.model}` : "",
     data.hasApiKey ? `AI Key: ${data.maskedKey}` : "AI Key: 未配置",
-    data.enabled ? "托管: 已开启（后台持久运行）" : "托管: 未开启",
-    `今日已发 ${data.todayPublished || 0}/${data.maxPostsPerDay || 10}`,
-    `上次运行: ${formatTime(data.lastRunAt)}`,
+    data.enabled ? "托管: 已开启" : "托管: 未开启",
+    `今日已发 ${data.todayPublished || 0}/${data.maxPostsPerDay || 10} 条`,
+    `上次运行 ${formatTime(data.lastRunAt)}`,
   ];
   const enabledHosted = (data.hostedAccounts || []).filter((item) => item.enabled);
   if (enabledHosted.length) {
@@ -4007,7 +4024,7 @@ function renderAiStatus(data) {
   if (hint) {
     if (data.enabled && data.hasApiKey) {
       hint.textContent =
-        "自动托管已保存到本地配置。关闭或刷新页面、重启软件后无需再次点击，后台会按间隔自动发帖。";
+        "自动托管已保存。关闭或重启软件后仍会按计划发帖，无需重复开启。";
       hint.classList.remove("hidden");
       hint.className = "message ok";
     } else {
