@@ -4,21 +4,40 @@ const fs = require("fs");
 const path = require("path");
 
 const CHECK_DELAY_MS = 4000;
+const DEFAULT_RELEASE_NOTES = "修复部分BUG";
 
 let mainWindowGetter = () => null;
 let pendingUpdateInfo = null;
+
+function stripHtml(text) {
+  return String(text || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function formatReleaseNotes(raw) {
+  const text =
+    typeof raw === "string"
+      ? stripHtml(raw)
+      : Array.isArray(raw)
+        ? raw.map((item) => stripHtml(item?.note || item)).filter(Boolean).join("\n")
+        : "";
+  return text || DEFAULT_RELEASE_NOTES;
+}
 
 function sanitizeInfo(info = {}) {
   return {
     version: info.version || "",
     releaseDate: info.releaseDate || "",
     releaseName: info.releaseName || "",
-    releaseNotes:
-      typeof info.releaseNotes === "string"
-        ? info.releaseNotes
-        : Array.isArray(info.releaseNotes)
-          ? info.releaseNotes.map((item) => item?.note || item).filter(Boolean).join("\n")
-          : "",
+    releaseNotes: DEFAULT_RELEASE_NOTES,
   };
 }
 

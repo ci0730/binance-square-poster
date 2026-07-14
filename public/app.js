@@ -2489,9 +2489,8 @@ function openUpdateModal(info = {}) {
   }
   const notesEl = $("#updateModalNotes");
   if (notesEl) {
-    const notes = String(info.releaseNotes || "").trim();
-    notesEl.textContent = notes || "建议更新至最新版，以获得功能改进与问题修复。";
-    notesEl.classList.toggle("hidden", !notesEl.textContent);
+    notesEl.textContent = "修复部分BUG";
+    notesEl.classList.remove("hidden");
   }
   $("#updateProgressWrap")?.classList.add("hidden");
   $("#btnUpdateInstall")?.classList.add("hidden");
