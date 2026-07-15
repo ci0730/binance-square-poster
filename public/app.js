@@ -3212,6 +3212,40 @@ async function saveAiProfileFromModal(event) {
   }
 }
 
+function applyMatchedAiModelToUi(matched, { profileModal = false } = {}) {
+  const model = String(matched || "").trim();
+  if (!model) return;
+
+  if (profileModal) {
+    if ($("#aiProfileCustomModelInput")) $("#aiProfileCustomModelInput").value = model;
+    if ($("#aiProfileModelSelect")) {
+      const select = $("#aiProfileModelSelect");
+      const hasOpt = [...(select.options || [])].some((item) => item.value === model);
+      if (!hasOpt) {
+        const opt = document.createElement("option");
+        opt.value = model;
+        opt.textContent = `${model}（自动匹配）`;
+        select.appendChild(opt);
+      }
+      select.value = model;
+    }
+    return;
+  }
+
+  if ($("#aiCustomModelInput")) $("#aiCustomModelInput").value = model;
+  if ($("#aiModelSelect")) {
+    const select = $("#aiModelSelect");
+    const hasOpt = [...(select.options || [])].some((item) => item.value === model);
+    if (!hasOpt) {
+      const opt = document.createElement("option");
+      opt.value = model;
+      opt.textContent = `${model}（自动匹配）`;
+      select.appendChild(opt);
+    }
+    select.value = model;
+  }
+}
+
 async function testAiProfileFromModal() {
   const profile = collectAiProfileFromModal();
   const isEdit = Boolean($("#aiProfileEditId")?.value);
@@ -3225,8 +3259,8 @@ async function testAiProfileFromModal() {
   }
   showAiProfileModalMessage(
     profile.model
-      ? `正在测试 ${profile.model}，若不支持将自动匹配可用模型…`
-      : "正在自动匹配该 Key 可用的模型…",
+      ? `正在测试 ${profile.model}（${profile.provider}），若不支持将自动匹配…`
+      : `正在自动匹配 ${profile.provider} 可用模型…`,
     "info",
   );
   try {
@@ -3248,13 +3282,7 @@ async function testAiProfileFromModal() {
       return;
     }
     const matched = data.matchedModel || data.model || profile.model;
-    if (matched) {
-      if ($("#aiProfileCustomModelInput")) $("#aiProfileCustomModelInput").value = matched;
-      if ($("#aiProfileModelSelect")) {
-        const opt = [...($("#aiProfileModelSelect").options || [])].find((item) => item.value === matched);
-        if (opt) $("#aiProfileModelSelect").value = matched;
-      }
-    }
+    applyMatchedAiModelToUi(matched, { profileModal: true });
     const switchHint = data.autoSwitched ? `（已自动切换为 ${matched}）` : "";
     showAiProfileModalMessage(`${data.message}${switchHint}：${data.preview || ""}`, "ok");
   } catch {
@@ -4419,8 +4447,8 @@ async function testAiApi() {
   const apiKey = config.apiKey;
   showAiSettingsMessage(
     config.model
-      ? `正在测试 ${config.model}，若不支持将自动匹配…`
-      : "正在自动匹配可用模型…",
+      ? `正在测试 ${config.model}（${config.provider}），若不支持将自动匹配…`
+      : `正在自动匹配 ${config.provider || "当前服务商"} 可用模型…`,
     "info",
   );
   try {
@@ -4441,11 +4469,7 @@ async function testAiApi() {
       return;
     }
     const matched = data.matchedModel || data.model || config.model;
-    if (matched && $("#aiCustomModelInput")) $("#aiCustomModelInput").value = matched;
-    if (matched && $("#aiModelSelect")) {
-      const opt = [...($("#aiModelSelect").options || [])].find((item) => item.value === matched);
-      if (opt) $("#aiModelSelect").value = matched;
-    }
+    applyMatchedAiModelToUi(matched, { profileModal: false });
     const switchHint = data.autoSwitched ? `（已自动切换为 ${matched}）` : "";
     showAiSettingsMessage(`${data.message}${switchHint}：${data.preview || ""}`, "ok");
   } catch {
