@@ -986,7 +986,7 @@
         <select id="aiProfileModelSelect" class="account-select"></select>
       </div>
       <div id="aiProfileCustomModelWrap" class="ai-model-row hidden">
-        <input type="text" id="aiProfileCustomModelInput" placeholder="必填，如 gpt-4o-mini（以平台模型列表为准）" autocomplete="off" />
+        <input type="text" id="aiProfileCustomModelInput" placeholder="可填 gpt-4o-mini；点测试会自动匹配可用模型" autocomplete="off" />
       </div>
 
       <label class="select-all-label">
@@ -1003,7 +1003,7 @@
 
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="btnCancelAiProfile">取消</button>
-        <button type="button" class="btn btn-secondary" id="btnTestAiProfileModal">测试连接</button>
+        <button type="button" class="btn btn-secondary" id="btnTestAiProfileModal">测试连接（自动匹配模型）</button>
         <button type="submit" class="btn btn-primary" id="btnSaveAiProfile">保存</button>
       </div>
     </form>

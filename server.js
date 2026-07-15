@@ -752,6 +752,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/ai/test" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
+      const autoMatch = body.autoMatch !== false;
       const creds = resolveAiCredentials({
         profileId: body.aiProfileId,
         overrides: {
@@ -760,11 +761,13 @@ const server = http.createServer(async (req, res) => {
           baseUrl: body.baseUrl,
           model: body.model,
         },
+        allowEmptyModel: autoMatch,
       });
       const result = await testAiApiKey(creds.apiKey, {
         provider: creds.provider,
         model: creds.model,
         baseUrl: creds.baseUrl,
+        autoMatch,
       });
       json(res, 200, result);
       return;

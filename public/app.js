@@ -3219,11 +3219,16 @@ async function testAiProfileFromModal() {
     showAiProfileModalMessage("请先填写 API Key", "err");
     return;
   }
-  if (profile.provider === "custom" && !profile.model) {
-    showAiProfileModalMessage("请填写自定义模型名（如 gpt-4o-mini），不要留空", "err");
+  if (profile.provider === "custom" && !profile.baseUrl) {
+    showAiProfileModalMessage("请填写 API Base URL", "err");
     return;
   }
-  showAiProfileModalMessage("正在测试 AI 连接...", "info");
+  showAiProfileModalMessage(
+    profile.model
+      ? `正在测试 ${profile.model}，若不支持将自动匹配可用模型…`
+      : "正在自动匹配该 Key 可用的模型…",
+    "info",
+  );
   try {
     const res = await fetch("/api/ai/test", {
       method: "POST",
@@ -3234,6 +3239,7 @@ async function testAiProfileFromModal() {
         provider: profile.provider,
         baseUrl: profile.baseUrl || undefined,
         model: profile.model || undefined,
+        autoMatch: true,
       }),
     });
     const data = await res.json();
@@ -3241,7 +3247,16 @@ async function testAiProfileFromModal() {
       showAiProfileModalMessage(data.error || "测试失败", "err");
       return;
     }
-    showAiProfileModalMessage(`${data.message}：${data.preview || ""}`, "ok");
+    const matched = data.matchedModel || data.model || profile.model;
+    if (matched) {
+      if ($("#aiProfileCustomModelInput")) $("#aiProfileCustomModelInput").value = matched;
+      if ($("#aiProfileModelSelect")) {
+        const opt = [...($("#aiProfileModelSelect").options || [])].find((item) => item.value === matched);
+        if (opt) $("#aiProfileModelSelect").value = matched;
+      }
+    }
+    const switchHint = data.autoSwitched ? `（已自动切换为 ${matched}）` : "";
+    showAiProfileModalMessage(`${data.message}${switchHint}：${data.preview || ""}`, "ok");
   } catch {
     showAiProfileModalMessage("无法连接本地服务", "err");
   }
@@ -3253,19 +3268,33 @@ async function testAiProfileById(profileId) {
     showApiAiManageMessage("该 AI 尚未配置 API Key", "err");
     return;
   }
-  showApiAiManageMessage("正在测试 AI 连接...", "info");
+  showApiAiManageMessage("正在测试 AI 连接（不支持时将自动匹配模型）...", "info");
   try {
     const res = await fetch("/api/ai/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ aiProfileId: profileId }),
+      body: JSON.stringify({ aiProfileId: profileId, autoMatch: true }),
     });
     const data = await res.json();
     if (!res.ok) {
       showApiAiManageMessage(data.error || "测试失败", "err");
       return;
     }
-    showApiAiManageMessage(`${profile.name}：${data.message}`, "ok");
+    if (data.autoSwitched && data.matchedModel) {
+      const nextProfiles = aiProfilesCache.map((item) =>
+        item.id === profileId ? { ...item, model: data.matchedModel } : item,
+      );
+      await saveAiProfilesToServer(nextProfiles, defaultAiProfileIdCache, {
+        silent: true,
+        messageEl: "api",
+      });
+      showApiAiManageMessage(
+        `${profile.name}：已自动切换到 ${data.matchedModel}，${data.message}`,
+        "ok",
+      );
+    } else {
+      showApiAiManageMessage(`${profile.name}：${data.message}`, "ok");
+    }
     const statusEl = $("#apiAiStatusText");
     if (statusEl) {
       statusEl.textContent = "连接成功";
@@ -4388,7 +4417,12 @@ async function saveAiConfig(overrides = {}, { silent = false } = {}) {
 async function testAiApi() {
   const config = collectAiConfigFromUI();
   const apiKey = config.apiKey;
-  showAiSettingsMessage("正在测试 AI 连接...", "info");
+  showAiSettingsMessage(
+    config.model
+      ? `正在测试 ${config.model}，若不支持将自动匹配…`
+      : "正在自动匹配可用模型…",
+    "info",
+  );
   try {
     const res = await fetch("/api/ai/test", {
       method: "POST",
@@ -4397,7 +4431,8 @@ async function testAiApi() {
         apiKey: apiKey || undefined,
         provider: config.provider,
         baseUrl: config.baseUrl || undefined,
-        model: config.model,
+        model: config.model || undefined,
+        autoMatch: true,
       }),
     });
     const data = await res.json();
@@ -4405,7 +4440,14 @@ async function testAiApi() {
       showAiSettingsMessage(data.error || "测试失败", "err");
       return;
     }
-    showAiSettingsMessage(`${data.message}：${data.preview || ""}`, "ok");
+    const matched = data.matchedModel || data.model || config.model;
+    if (matched && $("#aiCustomModelInput")) $("#aiCustomModelInput").value = matched;
+    if (matched && $("#aiModelSelect")) {
+      const opt = [...($("#aiModelSelect").options || [])].find((item) => item.value === matched);
+      if (opt) $("#aiModelSelect").value = matched;
+    }
+    const switchHint = data.autoSwitched ? `（已自动切换为 ${matched}）` : "";
+    showAiSettingsMessage(`${data.message}${switchHint}：${data.preview || ""}`, "ok");
   } catch {
     showAiSettingsMessage("无法连接本地服务", "err");
   }
