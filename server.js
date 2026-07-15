@@ -52,6 +52,7 @@ import { getAiSettingsPublic, saveAiSettings, resolveAiCredentials, readAiSettin
 import { listAiProvidersPublic } from "./lib/ai-providers.js";
 import { generateSquarePost, testAiApiKey } from "./lib/ai-generator.js";
 import { getAiSchedulerStatus, runAiHostedCycle, startAiScheduler } from "./lib/ai-scheduler.js";
+import { getAiRunProgress } from "./lib/ai-run-progress.js";
 import { buildCryptoContext, fetchRegistryTokenQuotes, syncBinanceTokenRegistry, fetchHotNegativeFundingTokens } from "./lib/crypto-context.js";
 import {
   listTokenRegistryPublic,
@@ -734,6 +735,11 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/ai/status" && req.method === "GET") {
       json(res, 200, getAiSchedulerStatus());
+      return;
+    }
+
+    if (pathname === "/api/ai/progress" && req.method === "GET") {
+      json(res, 200, getAiRunProgress());
       return;
     }
 

@@ -88,6 +88,7 @@ const DEFAULT_SENTIMENT_OPTIONS = [
 ];
 
 const DEFAULT_CONTENT_STYLE_OPTIONS = [
+  { id: "random", label: "随机（每次换风格）", hint: "从全部模板中随机抽取，直到你手动改回指定风格" },
   { id: "casual", label: "口语化分享", hint: "真人口吻、自然聊天感，适合日常互动" },
   { id: "market", label: "行情短评", hint: "数据简洁、带关键价位，适合冲高流量" },
   { id: "news", label: "热点快讯", hint: "快讯体、核心看点，蹭官方与热点流量" },
@@ -604,7 +605,7 @@ function getDefaultAccountId() {
 }
 
 function getPostAccountId(post) {
-  return post.accountId || getDefaultAccountId();
+  return post?.accountId || getDefaultAccountId() || "";
 }
 
 function getPostAccountName(post) {
@@ -684,10 +685,6 @@ function buildPostAccountBlock(p, { editable = false } = {}) {
       <span class="post-account-label">发布账号</span>
       <span class="post-account-badge">${escapeHtml(accountName)}</span>
     </div>`;
-}
-
-function getPostAccountId(post) {
-  return post?.accountId || getDefaultAccountId() || "";
 }
 
 function getSelectedMonitorAccountId() {
@@ -1490,13 +1487,11 @@ function bindEvents() {
       parseProxyQuickInput("global");
     }
   });
-  $("#btnSaveAiConfig").addEventListener("click", saveAiConfig);
   $("#btnSaveAiSettings")?.addEventListener("click", saveAiSettingsOnly);
   $("#btnPreviewAiStyleRef")?.addEventListener("click", () => previewAiStyleReference());
   $("#btnAddAiStyleRef")?.addEventListener("click", addAiStyleReferenceFromUi);
   $("#aiStyleRefFileInput")?.addEventListener("change", onAiStyleRefFileSelected);
   $("#aiStyleRefList")?.addEventListener("click", onAiStyleRefListClick);
-  $("#btnTestAi")?.addEventListener("click", testAiApi);
   $("#aiProviderSelect")?.addEventListener("change", onAiProviderChange);
   $("#btnAddCustomToken")?.addEventListener("click", addCustomTokenFromInput);
   $("#aiCustomTokenInput")?.addEventListener("keydown", (e) => {
@@ -1508,6 +1503,10 @@ function bindEvents() {
   $("#btnAiGenerateDraft").addEventListener("click", () => aiRun({ publish: false }));
   $("#btnAiRunNow").addEventListener("click", () => aiRun({ publish: true }));
   $("#btnAiCancelHosting").addEventListener("click", stopAiHosting);
+  $("#btnHostSelectAll")?.addEventListener("click", selectAllHostedAccounts);
+  $("#btnHostSelectPage")?.addEventListener("click", selectHostedAccountsOnPage);
+  $("#btnHostClearPage")?.addEventListener("click", clearLastHostedSelection);
+  bindHostSettingsAutosave();
   $("#btnAiFillPost").addEventListener("click", aiFillPostModal);
   $("#btnThemeToggle")?.addEventListener("click", toggleTheme);
   $("#btnDisclaimer")?.addEventListener("click", () => showLegalModal("disclaimer"));
@@ -2726,10 +2725,16 @@ function formatTime(ts, compact = false) {
 }
 
 let aiRunning = false;
+let aiRunToken = 0;
 let aiCustomTokens = [];
 /** @type {Record<string, string[]>} */
 let aiHostedCustomTokens = {};
-/** @type {{contentStyleOptions:Array,marketSentimentOptions:Array,availableTokens:Array}} */
+let aiHostedExpanded = new Set();
+let aiHostedAccountsCache = [];
+let aiHostedPage = 1;
+const AI_HOSTED_PAGE_SIZE = 10;
+/** 最近一次批量勾选：all=全选，page=本页；用于「取消」按钮 */
+let lastHostSelectMode = "page";
 let aiUiOptions = {
   contentStyleOptions: DEFAULT_CONTENT_STYLE_OPTIONS,
   marketSentimentOptions: DEFAULT_SENTIMENT_OPTIONS,
@@ -2737,10 +2742,6 @@ let aiUiOptions = {
 };
 /** @type {Array<{id:string,name:string,sampleText:string,createdAt?:number}>} */
 let aiStyleReferencesCache = [];
-/** @type {Set<string>} */
-let aiHostedExpanded = new Set();
-/** 完整托管账号列表缓存（搜索筛选时仍保留未显示行） */
-let aiHostedAccountsCache = [];
 /** 币安负资金费率热点代币缓存 */
 let aiHotTokensCache = { tokens: [], fetchedAt: 0 };
 /** @type {Array<{id:string,label:string,models:Array<{id:string,label:string}>,keyHint:string,keyUrl:string,defaultModel:string,allowCustomBaseUrl?:boolean,allowCustomModel?:boolean}>} */
@@ -3462,6 +3463,9 @@ async function applyAiConfigToUI(data) {
   if ($("#aiIntervalInput")) $("#aiIntervalInput").value = data.intervalMinutes || 60;
   if ($("#aiPostsPerRunInput")) $("#aiPostsPerRunInput").value = data.postsPerRun || 1;
   if ($("#aiMaxPerDayInput")) $("#aiMaxPerDayInput").value = data.maxPostsPerDay || 10;
+  if ($("#aiHostConcurrencyInput")) {
+    $("#aiHostConcurrencyInput").value = Math.max(1, Math.min(Number(data.hostConcurrency) || 3, 8));
+  }
   if ($("#aiPublishDelayMinInput")) {
     $("#aiPublishDelayMinInput").value =
       data.publishDelayMinSeconds ?? data.publishIntervalSeconds ?? 3;
@@ -3489,11 +3493,13 @@ async function applyAiConfigToUI(data) {
 }
 
 function formatHostedStyleLabel(host) {
-  const styles = (host.contentStyles || [])
+  const styles = host.contentStyles || [];
+  if (styles.includes("random")) return "随机（每次换风格）";
+  const labels = styles
     .map((id) => aiUiOptions.contentStyleOptions.find((item) => item.id === id)?.label || id)
     .filter(Boolean);
-  if (!styles.length) return "口语化分享";
-  return styles.length > 2 ? `${styles.slice(0, 2).join("、")}…` : styles.join("、");
+  if (!labels.length) return "口语化分享";
+  return labels.length > 2 ? `${labels.slice(0, 2).join("、")}…` : labels.join("、");
 }
 
 function formatHostedSentimentLabel(sentiment) {
@@ -3536,9 +3542,20 @@ function getHostedSearchQuery() {
 
 function buildHostedStyleSelectOptions(selectedStyles = ["casual"]) {
   const selected = selectedStyles?.[0] || "casual";
-  const list = aiUiOptions.contentStyleOptions?.length
+  const list = (aiUiOptions.contentStyleOptions?.length
     ? aiUiOptions.contentStyleOptions
-    : DEFAULT_CONTENT_STYLE_OPTIONS;
+    : DEFAULT_CONTENT_STYLE_OPTIONS
+  ).slice();
+  // 确保「随机」始终在托管账号风格列表第一项
+  if (!list.some((opt) => opt.id === "random")) {
+    list.unshift(DEFAULT_CONTENT_STYLE_OPTIONS[0]);
+  } else {
+    const idx = list.findIndex((opt) => opt.id === "random");
+    if (idx > 0) {
+      const [randomOpt] = list.splice(idx, 1);
+      list.unshift(randomOpt);
+    }
+  }
   return list
     .map(
       (opt) =>
@@ -3559,6 +3576,115 @@ function buildHostedSentimentSelectOptions(selected = "auto") {
     .join("");
 }
 
+function getFilteredHostedAccounts(hostedAll = aiHostedAccountsCache) {
+  const q = getHostedSearchQuery();
+  if (!q) return hostedAll;
+  return hostedAll.filter((host) =>
+    String(host.accountName || getAccountName(host.accountId)).toLowerCase().includes(q),
+  );
+}
+
+function getHostedPageSlice(filtered) {
+  const totalPages = Math.max(1, Math.ceil((filtered.length || 0) / AI_HOSTED_PAGE_SIZE) || 1);
+  if (aiHostedPage > totalPages) aiHostedPage = totalPages;
+  if (aiHostedPage < 1) aiHostedPage = 1;
+  const start = (aiHostedPage - 1) * AI_HOSTED_PAGE_SIZE;
+  return {
+    totalPages,
+    start,
+    pageRows: filtered.slice(start, start + AI_HOSTED_PAGE_SIZE),
+  };
+}
+
+function renderHostedPagination(filteredCount) {
+  const el = $("#aiHostedPagination");
+  if (!el) return;
+  const totalPages = Math.max(1, Math.ceil(filteredCount / AI_HOSTED_PAGE_SIZE) || 1);
+  if (aiHostedPage > totalPages) aiHostedPage = totalPages;
+  const start = filteredCount === 0 ? 0 : (aiHostedPage - 1) * AI_HOSTED_PAGE_SIZE + 1;
+  const end = Math.min(aiHostedPage * AI_HOSTED_PAGE_SIZE, filteredCount);
+  el.innerHTML = `
+    <span class="ai-hosted-pagination-summary">共 ${filteredCount} 个 · 每页 ${AI_HOSTED_PAGE_SIZE} · 第 ${start}-${end} 个</span>
+    <div class="ai-hosted-pagination-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="btnHostedPrevPage" ${aiHostedPage <= 1 ? "disabled" : ""}>上一页</button>
+      <span class="ai-hosted-pagination-page">第 ${filteredCount ? aiHostedPage : 0} / ${filteredCount ? totalPages : 0} 页</span>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnHostedNextPage" ${aiHostedPage >= totalPages || !filteredCount ? "disabled" : ""}>下一页</button>
+    </div>
+  `;
+  $("#btnHostedPrevPage")?.addEventListener("click", () => {
+    if (aiHostedPage <= 1) return;
+    syncVisibleHostedRowsIntoCache();
+    aiHostedPage -= 1;
+    renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
+  });
+  $("#btnHostedNextPage")?.addEventListener("click", () => {
+    if (aiHostedPage >= totalPages) return;
+    syncVisibleHostedRowsIntoCache();
+    aiHostedPage += 1;
+    renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
+  });
+}
+
+function setHostedEnabledForIds(ids, enabled) {
+  const idSet = new Set(ids);
+  syncVisibleHostedRowsIntoCache();
+  aiHostedAccountsCache = aiHostedAccountsCache.map((item) =>
+    idSet.has(item.accountId) ? { ...item, enabled: Boolean(enabled) } : item,
+  );
+  renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
+  scheduleHostSettingsAutosave();
+  showAiMessage(
+    enabled
+      ? `已勾选 ${ids.length} 个托管账号`
+      : `已取消 ${ids.length} 个账号的托管勾选`,
+    "ok",
+  );
+}
+
+function selectAllHostedAccounts() {
+  const ids = getFilteredHostedAccounts().map((item) => item.accountId);
+  if (!ids.length) {
+    showAiMessage("没有可勾选的账号", "info");
+    return;
+  }
+  lastHostSelectMode = "all";
+  setHostedEnabledForIds(ids, true);
+}
+
+function selectHostedAccountsOnPage() {
+  const filtered = getFilteredHostedAccounts();
+  const { pageRows } = getHostedPageSlice(filtered);
+  const ids = pageRows.map((item) => item.accountId);
+  if (!ids.length) {
+    showAiMessage("本页没有账号", "info");
+    return;
+  }
+  lastHostSelectMode = "page";
+  setHostedEnabledForIds(ids, true);
+}
+
+function clearHostedAccountsOnPage() {
+  const filtered = getFilteredHostedAccounts();
+  const { pageRows } = getHostedPageSlice(filtered);
+  const ids = pageRows.map((item) => item.accountId);
+  if (!ids.length) return;
+  setHostedEnabledForIds(ids, false);
+}
+
+/** 取消：跟上次批量勾选范围一致（全选→取消全部；本页→取消本页） */
+function clearLastHostedSelection() {
+  if (lastHostSelectMode === "all") {
+    const ids = getFilteredHostedAccounts().map((item) => item.accountId);
+    if (!ids.length) {
+      showAiMessage("没有可取消的账号", "info");
+      return;
+    }
+    setHostedEnabledForIds(ids, false);
+    return;
+  }
+  clearHostedAccountsOnPage();
+}
+
 function renderHostedAccountsList(data) {
   const container = $("#aiHostedAccountsList");
   if (!container) return;
@@ -3570,23 +3696,26 @@ function renderHostedAccountsList(data) {
 
   if (!accountStore.accounts.length && !hostedAll.length) {
     container.innerHTML = `<div class="account-empty">请先在「账号管理」中添加账号</div>`;
+    renderHostedPagination(0);
     return;
   }
 
   if (!hostedAll.length) {
     container.innerHTML = `<div class="account-empty">暂无账号，请先在「账号管理」中添加</div>`;
+    renderHostedPagination(0);
     return;
   }
 
-  const q = getHostedSearchQuery();
-  const hosted = q
-    ? hostedAll.filter((host) => String(host.accountName || getAccountName(host.accountId)).toLowerCase().includes(q))
-    : hostedAll;
-
-  if (!hosted.length) {
+  const filtered = getFilteredHostedAccounts(hostedAll);
+  if (!filtered.length) {
     container.innerHTML = `<div class="account-empty">未找到匹配账号</div>`;
+    renderHostedPagination(0);
     return;
   }
+
+  const { pageRows: hosted, start } = getHostedPageSlice(filtered);
+  const pageEnabledCount = hosted.filter((item) => item.enabled).length;
+  renderHostedPagination(filtered.length);
 
   container.innerHTML = `
     <div class="ai-report-wrap">
@@ -3594,7 +3723,12 @@ function renderHostedAccountsList(data) {
         <thead>
           <tr>
             <th>序号</th>
-            <th>托管</th>
+            <th title="勾选表头可选中本页全部">
+              <label class="ai-host-check-all-wrap">
+                <input type="checkbox" id="aiHostSelectPageHeader" ${pageEnabledCount === hosted.length && hosted.length ? "checked" : ""} />
+                托管
+              </label>
+            </th>
             <th>账号</th>
             <th>风格</th>
             <th>AI</th>
@@ -3616,7 +3750,7 @@ function renderHostedAccountsList(data) {
               const name = host.accountName || getAccountName(id);
               return `
               <tr class="ai-hosted-account-card ${host.enabled ? "is-enabled" : ""}" data-account-id="${id}">
-                <td class="num muted">${index + 1}</td>
+                <td class="num muted">${start + index + 1}</td>
                 <td>
                   <input type="checkbox" class="ai-host-enabled" data-account-id="${id}" ${host.enabled ? "checked" : ""} title="启用托管" />
                 </td>
@@ -3696,8 +3830,18 @@ function renderHostedAccountsList(data) {
       aiUiOptions.availableTokens,
       host.selectedTokens || [],
       aiHostedCustomTokens[id],
-      { onUpdate: () => syncVisibleHostedRowsIntoCache() },
+      {
+        onUpdate: () => {
+          syncVisibleHostedRowsIntoCache();
+          scheduleHostSettingsAutosave();
+        },
+      },
     );
+  });
+
+  $("#aiHostSelectPageHeader")?.addEventListener("change", (e) => {
+    if (e.target.checked) selectHostedAccountsOnPage();
+    else clearHostedAccountsOnPage();
   });
 
   container.querySelectorAll(".ai-host-enabled").forEach((input) => {
@@ -3712,11 +3856,15 @@ function renderHostedAccountsList(data) {
       }
       syncVisibleHostedRowsIntoCache();
       renderHostedSummary(aiHostedAccountsCache);
+      scheduleHostSettingsAutosave();
     });
   });
 
   container.querySelectorAll(".ai-host-style-select, .ai-host-profile-select, .ai-host-sentiment-select").forEach((select) => {
-    select.addEventListener("change", () => syncVisibleHostedRowsIntoCache());
+    select.addEventListener("change", () => {
+      syncVisibleHostedRowsIntoCache();
+      scheduleHostSettingsAutosave();
+    });
   });
 
   container.querySelectorAll(".ai-host-toggle-config").forEach((btn) => {
@@ -3751,7 +3899,6 @@ function renderHostedAccountsList(data) {
     btn.addEventListener("click", () => addAllHotTokensToAccount(btn.dataset.accountId));
   });
 
-  // 已展开的账号刷新列表后继续显示热点
   hosted.forEach((host) => {
     if (aiHostedExpanded.has(host.accountId)) {
       loadHotTokensForAccount(host.accountId);
@@ -3776,6 +3923,7 @@ function renderHostedAccountsList(data) {
     searchInput.dataset.bound = "1";
     searchInput.addEventListener("input", () => {
       syncVisibleHostedRowsIntoCache();
+      aiHostedPage = 1;
       renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
     });
   }
@@ -3849,10 +3997,15 @@ function addHostedCustomToken(accountId) {
   const selected = collectSelectedTokensFromContainer(tokenPicker);
   if (!selected.includes(symbol)) selected.push(symbol);
   renderTokenPickerIn(tokenPicker, aiUiOptions.availableTokens, selected, aiHostedCustomTokens[accountId], {
-    onUpdate: () => syncVisibleHostedRowsIntoCache(),
+    onUpdate: () => {
+      syncVisibleHostedRowsIntoCache();
+      scheduleHostSettingsAutosave();
+    },
   });
   input.value = "";
   syncVisibleHostedRowsIntoCache();
+  scheduleHostSettingsAutosave();
+  showAiMessage(`已添加自定义代币 $${symbol}，会自动保存`, "ok");
 }
 
 function updateTokenSummary() {
@@ -3950,9 +4103,15 @@ function ensureHotTokenInTargets(accountId, symbol, { select = true } = {}) {
     aiUiOptions.availableTokens,
     [...current],
     aiHostedCustomTokens[accountId],
-    { onUpdate: () => syncVisibleHostedRowsIntoCache() },
+    {
+      onUpdate: () => {
+        syncVisibleHostedRowsIntoCache();
+        scheduleHostSettingsAutosave();
+      },
+    },
   );
   syncVisibleHostedRowsIntoCache();
+  scheduleHostSettingsAutosave();
 }
 
 async function loadHotTokensForAccount(accountId, { force = false } = {}) {
@@ -4115,7 +4274,7 @@ function addCustomTokenFromInput() {
 
   input.value = "";
   updateTokenSummary();
-  showAiMessage(`已添加自定义代币 $${symbol}，记得点击「保存 AI 配置」`, "ok");
+  showAiMessage(`已添加自定义代币 $${symbol}，会自动保存`, "ok");
 }
 
 function collectSelectedTokensFromUI() {
@@ -4183,32 +4342,63 @@ function collectContentStylesFromUI() {
 
 function updateAiHostingButtons(data) {
   const btn = $("#btnAiRunNow");
+  const draftBtn = $("#btnAiGenerateDraft");
   const cancelBtn = $("#btnAiCancelHosting");
-  if (!btn || aiRunning) return;
-  if (data?.enabled) {
+  const on = Boolean(data?.enabled);
+
+  if (cancelBtn) {
+    cancelBtn.classList.toggle("hidden", !on);
+    cancelBtn.disabled = false;
+    cancelBtn.title = on ? "关闭自动托管，后台将不再按计划发帖" : "";
+  }
+
+  // 运行中只更新取消按钮显隐，不改主按钮文案（避免把「运行中...」冲掉或乱恢复）
+  if (aiRunning) return;
+
+  if (draftBtn) draftBtn.disabled = false;
+  if (!btn) return;
+
+  btn.disabled = false;
+  if (on) {
     btn.textContent = "立即发一条（可选）";
     btn.title = "后台已自动托管，刷新或重启后仍会按计划发帖。此按钮仅用于立即额外发一条";
     btn.classList.remove("btn-accent");
     btn.classList.add("btn-secondary");
-    if (cancelBtn) cancelBtn.classList.remove("hidden");
   } else {
     btn.textContent = "开启并立即托管";
     btn.title = "开启自动托管并立即发布一条，之后将按间隔自动发帖";
     btn.classList.remove("btn-secondary");
     btn.classList.add("btn-accent");
-    if (cancelBtn) cancelBtn.classList.add("hidden");
   }
+  delete btn.dataset.prevText;
+}
+
+/** 强制回到「未点开启」的按钮态（含卡住「运行中...」时） */
+function resetAiHostingRunUi(data = { enabled: false }) {
+  aiRunning = false;
+  aiRunToken += 1;
+  const runBtn = $("#btnAiRunNow");
+  const draftBtn = $("#btnAiGenerateDraft");
+  if (runBtn) {
+    runBtn.disabled = false;
+    delete runBtn.dataset.prevText;
+  }
+  if (draftBtn) {
+    draftBtn.disabled = false;
+    delete draftBtn.dataset.prevText;
+  }
+  if ($("#aiEnabled") && !data.enabled) $("#aiEnabled").checked = false;
+  updateAiHostingButtons(data);
 }
 
 async function stopAiHosting() {
-  const current = await fetch("/api/ai/config").then((r) => r.json()).catch(() => ({}));
-  if (!current.enabled) {
-    showAiMessage("当前未开启托管", "info");
-    return;
-  }
   const saved = await saveAiConfig({ enabled: false }, { silent: true });
-  if (!saved) return;
-  showAiMessage("已取消 AI 自动托管，后台将不再自动发帖。", "ok");
+  resetAiHostingRunUi(saved || { enabled: false });
+  if (saved) {
+    showAiMessage("已取消 AI 自动托管，后台将不再自动发帖。", "ok");
+  } else {
+    showAiMessage("已恢复为未开启托管状态", "ok");
+  }
 }
 
 function renderAiStatus(data) {
@@ -4319,6 +4509,9 @@ function collectAiHostingSettingsFromUI() {
   if ($("#aiIntervalInput")) out.intervalMinutes = parseInt($("#aiIntervalInput").value, 10) || 60;
   if ($("#aiPostsPerRunInput")) out.postsPerRun = parseInt($("#aiPostsPerRunInput").value, 10) || 1;
   if ($("#aiMaxPerDayInput")) out.maxPostsPerDay = parseInt($("#aiMaxPerDayInput").value, 10) || 10;
+  if ($("#aiHostConcurrencyInput")) {
+    out.hostConcurrency = Math.max(1, Math.min(parseInt($("#aiHostConcurrencyInput").value, 10) || 3, 8));
+  }
   if ($("#aiPublishDelayMinInput")) {
     out.publishDelayMinSeconds = parseInt($("#aiPublishDelayMinInput").value, 10) || 3;
   }
@@ -4554,7 +4747,7 @@ async function saveAiSettingsOnly(overrides = {}, { silent = false } = {}) {
   }
 }
 
-async function saveAiConfig(overrides = {}, { silent = false } = {}) {
+async function saveAiConfig(overrides = {}, { silent = false, skipUiRefresh = false } = {}) {
   const payload = { ...collectAiConfigFromUI(), ...overrides };
   if (payload.enabled && !payload.hostedAccounts?.some((item) => item.enabled)) {
     if (!silent) showAiMessage("请至少勾选一个托管账号", "err");
@@ -4580,14 +4773,18 @@ async function saveAiConfig(overrides = {}, { silent = false } = {}) {
     const data = normalizeAiConfigResponse(raw);
     aiProfilesCache = data.aiProfiles || [];
     defaultAiProfileIdCache = data.defaultAiProfileId || null;
-    $("#aiApiKeyInput").value = "";
-    await applyAiConfigToUI(data);
+    if ($("#aiApiKeyInput")) $("#aiApiKeyInput").value = "";
+    if (skipUiRefresh) {
+      if ($("#aiStatusText")) renderAiStatus(data);
+    } else {
+      await applyAiConfigToUI(data);
+    }
     if (activeView === "api") refreshApiAiManagePanel();
     if (!silent) {
       showAiMessage(
         data.enabled
-          ? "AI 配置已保存。自动托管已开启，刷新或重启后无需再点，后台会按间隔自动发帖。"
-          : "AI 配置已保存",
+          ? "托管设置已保存。自动托管已开启，刷新或重启后无需再点，后台会按间隔自动发帖。"
+          : "托管设置已保存",
         "ok",
       );
     }
@@ -4595,6 +4792,38 @@ async function saveAiConfig(overrides = {}, { silent = false } = {}) {
   } catch {
     if (!silent) showAiMessage("无法连接本地服务", "err");
     return null;
+  }
+}
+
+let aiHostAutosaveTimer = null;
+function scheduleHostSettingsAutosave() {
+  clearTimeout(aiHostAutosaveTimer);
+  aiHostAutosaveTimer = setTimeout(() => {
+    saveAiConfig({}, { silent: true, skipUiRefresh: true }).then((data) => {
+      if (data && !aiRunning) showAiMessage("托管设置已自动保存", "ok");
+    });
+  }, 700);
+}
+
+function bindHostSettingsAutosave() {
+  const ids = [
+    "aiEnabled",
+    "aiUseNews",
+    "aiIntervalInput",
+    "aiPostsPerRunInput",
+    "aiMaxPerDayInput",
+    "aiHostConcurrencyInput",
+    "aiPublishDelayMinInput",
+    "aiPublishDelayMaxInput",
+    "aiAutoPublish",
+    "aiAttachImages",
+    "aiPreventDuplicate",
+  ];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el || el.dataset.autosaveBound) continue;
+    el.dataset.autosaveBound = "1";
+    el.addEventListener("change", scheduleHostSettingsAutosave);
   }
 }
 
@@ -4684,13 +4913,28 @@ async function aiRun({ publish = false } = {}) {
 
   const actionText = publish ? "生成并发布" : "生成草稿";
   const btn = publish ? $("#btnAiRunNow") : $("#btnAiGenerateDraft");
+  const runToken = ++aiRunToken;
   aiRunning = true;
   if (btn) {
     btn.disabled = true;
     btn.dataset.prevText = btn.textContent;
     btn.textContent = "运行中...";
   }
-  showAiMessage(`正在${actionText}...`, "info");
+  showAiMessage(
+    publish
+      ? "正在生成并发布…（进度会自动更新；最久通常卡在 AI 写稿）"
+      : "正在生成草稿…（进度会自动更新）",
+    "info",
+  );
+  const progressTimer = setInterval(async () => {
+    if (runToken !== aiRunToken) return;
+    try {
+      const pr = await fetch("/api/ai/progress").then((r) => r.json());
+      if (pr?.message) showAiMessage(pr.message, "info");
+    } catch {
+      // ignore
+    }
+  }, 1200);
   try {
     const res = await fetch("/api/ai/run", {
       method: "POST",
@@ -4699,13 +4943,12 @@ async function aiRun({ publish = false } = {}) {
         publish,
         count: publish ? 1 : config.postsPerRun,
         manual: true,
-        allAccounts: !publish,
-        provider: config.provider,
-        baseUrl: config.baseUrl || undefined,
-        model: config.model,
+        allAccounts: true,
+        // 不传全局 provider/model，让各账号自己的 AI Profile 生效
         topic: config.topic,
       }),
     });
+    if (runToken !== aiRunToken) return;
     const data = await res.json();
     if (!res.ok) {
       showAiMessage(data.error || `${actionText}失败`, "err");
@@ -4754,12 +4997,15 @@ async function aiRun({ publish = false } = {}) {
     }
     await refreshAiRuntimeStatus();
   } catch {
-    showAiMessage("无法连接本地服务", "err");
+    if (runToken === aiRunToken) showAiMessage("无法连接本地服务", "err");
   } finally {
+    clearInterval(progressTimer);
+    if (runToken !== aiRunToken) return;
     aiRunning = false;
     if (btn) {
       btn.disabled = false;
       btn.textContent = btn.dataset.prevText || btn.textContent;
+      delete btn.dataset.prevText;
     }
     const latest = await fetch("/api/ai/config").then((r) => r.json()).catch(() => null);
     if (latest) updateAiHostingButtons(latest);
@@ -5379,8 +5625,12 @@ function getFilteredTokenRows() {
 
 function renderTokenTypeBadge(token) {
   const isAlpha = token.listingType === "alpha" || token.chain === "binance-alpha";
+  const isFutures = token.listingType === "futures" || token.chain === "binance-futures";
+  if (isFutures) {
+    return `<span class="token-type-badge is-futures" title="币安 U 本位永续（含 TradFi）">合约</span>`;
+  }
   if (isAlpha) {
-    return `<span class="token-type-badge is-alpha" title="币安 Alpha / 合约代币">合约</span>`;
+    return `<span class="token-type-badge is-alpha" title="币安 Alpha">Alpha</span>`;
   }
   return `<span class="token-type-badge is-spot" title="币安现货">现货</span>`;
 }
@@ -5558,14 +5808,14 @@ async function syncBinanceTokensFromUi({ silentConfirm = false } = {}) {
   if (
     !silentConfirm &&
     !confirm(
-      "从币安同步全部现货 + Alpha？\n会自动填写合约地址；只有你手动改过的合约不会被覆盖。\n大约需要 10–30 秒，请稍候。",
+      "从币安同步全部现货 + Alpha + U本位合约？\n会自动填写合约地址；只有你手动改过的合约不会被覆盖。\n大约需要 10–30 秒，请稍候。",
     )
   ) {
     return;
   }
   const btn = $("#btnSyncBinanceTokens");
   if (btn) btn.disabled = true;
-  setTokenRegistryMessage("正在同步：拉取现货列表与合约地址（约 10–30 秒）…", "info");
+  setTokenRegistryMessage("正在同步：拉取现货 / Alpha / U 本位合约（约 10–30 秒）…", "info");
   try {
     const res = await fetch("/api/token-registry/sync", { method: "POST" });
     const data = await res.json();
@@ -5573,7 +5823,7 @@ async function syncBinanceTokensFromUi({ silentConfirm = false } = {}) {
     if (data.settings) tokenRegistryState.settings = data.settings;
     applyTokenRefreshIntervalToUi();
     setTokenRegistryMessage(
-      `同步完成：新增 ${data.added || 0}，回填合约 ${data.contractFilled || 0}，更新合约 ${data.contractUpdated || 0}，共 ${data.total || 0}（现货 ${data.spotPairs || 0} / Alpha ${data.alphaOnly || 0}）。正在刷新列表…`,
+      `同步完成：新增 ${data.added || 0}，回填合约 ${data.contractFilled || 0}，更新合约 ${data.contractUpdated || 0}，共 ${data.total || 0}（现货 ${data.spotPairs || 0} / Alpha ${data.alphaOnly || 0} / U本位 ${data.futuresOnly || 0}）。正在刷新列表…`,
       "ok",
     );
     await loadTokenRegistry({ autoSyncIfSeed: false });

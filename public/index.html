@@ -11,7 +11,7 @@
       document.documentElement.setAttribute("data-theme", theme);
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=23" />
+  <link rel="stylesheet" href="/style.css?v=27" />
 </head>
 <body>
   <div class="app-shell">
@@ -427,7 +427,7 @@
       <section id="view-ai-host" class="view-panel hidden">
         <div class="view-header">
           <h2>AI 托管</h2>
-          <p class="hint">选择账号、风格与发帖节奏；保存后后台将按计划自动发帖</p>
+          <p class="hint">选择账号、风格与发帖节奏；修改会自动保存，后台按计划发帖</p>
         </div>
         <div class="panel">
           <div class="ai-host-top-bar">
@@ -440,43 +440,39 @@
                 <input type="checkbox" id="aiUseNews" checked />
                 <span>结合最新资讯/行情</span>
               </label>
-              <a id="aiKeyHelpLink" class="ai-host-key-link" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
+              <span class="hint ai-host-api-hint">AI Key / 模型请到「API 管理」配置</span>
             </div>
-            <p class="hint ai-host-top-hint" id="aiIntroHint">默认 AI 可在此改；多套 API 请到「API 管理」。以参考风格为主时可关资讯。</p>
-            <div class="ai-host-provider-compact">
-              <label class="field compact-field">
-                <span>AI 服务商</span>
-                <select id="aiProviderSelect" class="account-select"></select>
-              </label>
-              <label class="field compact-field hidden" id="aiBaseUrlWrap">
-                <span>API Base URL</span>
-                <input type="text" id="aiBaseUrlInput" placeholder="https://api.xxx.com/v1/chat/completions" autocomplete="off" />
-              </label>
-              <label class="field compact-field">
-                <span>API Key</span>
-                <input type="password" id="aiApiKeyInput" placeholder="留空表示不修改" autocomplete="off" />
-              </label>
-              <div id="aiModelSelectWrap" class="field compact-field ai-model-row">
-                <span>模型</span>
+            <!-- 保留隐藏字段，便于现有逻辑读取默认 AI 配置，界面不再重复展示 -->
+            <div class="hidden" aria-hidden="true">
+              <a id="aiKeyHelpLink" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
+              <p id="aiIntroHint"></p>
+              <select id="aiProviderSelect" class="account-select"></select>
+              <div id="aiBaseUrlWrap" class="hidden">
+                <input type="text" id="aiBaseUrlInput" autocomplete="off" />
+              </div>
+              <input type="password" id="aiApiKeyInput" autocomplete="off" />
+              <div id="aiModelSelectWrap">
                 <select id="aiModelSelect" class="account-select"></select>
               </div>
-              <div id="aiCustomModelWrap" class="field compact-field ai-model-row hidden">
-                <span>模型</span>
-                <input type="text" id="aiCustomModelInput" placeholder="如 gpt-4o-mini" autocomplete="off" />
+              <div id="aiCustomModelWrap" class="hidden">
+                <input type="text" id="aiCustomModelInput" autocomplete="off" />
               </div>
             </div>
           </div>
 
           <div class="ai-hosted-section">
             <div class="ai-hosted-head">
-              <div>
-                <h3>托管账号列表</h3>
-                <p class="hint">一行一个账号。可直接修改风格、AI 与观点；点「代币」展开目标代币。修改后请点击「保存 AI 配置」。</p>
+              <h3>托管账号列表</h3>
+              <div class="ai-hosted-head-actions">
+                <button type="button" class="btn btn-secondary btn-sm" id="btnHostSelectAll" title="勾选全部账号">全选</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnHostSelectPage" title="仅勾选本页最多 10 个">本页</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btnHostClearPage" title="取消勾选：上次全选则取消全部，上次本页则取消本页">取消</button>
+                <input type="search" id="aiHostedSearchInput" class="ai-hosted-search" placeholder="搜索账号…" autocomplete="off" />
               </div>
-              <input type="search" id="aiHostedSearchInput" class="ai-hosted-search" placeholder="搜索账号名称…" autocomplete="off" />
             </div>
             <div id="aiHostedSummary" class="ai-hosted-summary"></div>
             <div id="aiHostedAccountsList" class="ai-hosted-accounts-list"></div>
+            <div id="aiHostedPagination" class="ai-hosted-pagination"></div>
           </div>
 
           <div class="form-row">
@@ -494,6 +490,11 @@
               每日上限
               <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
             </label>
+            <label class="inline-label" title="多账号同时写稿/发帖的路数，建议 2–5">
+              并行账号数
+              <input type="number" id="aiHostConcurrencyInput" value="3" min="1" max="8" />
+              路
+            </label>
           </div>
           <div class="form-row">
             <label class="inline-label">
@@ -504,22 +505,20 @@
               秒
             </label>
           </div>
-          <p class="hint">同一次托管连发多条，或多账号轮发时，每条之间在上述秒数范围内随机等待</p>
+          <p class="hint">同一次托管连发多条时，每条之间在上述秒数范围内随机等待。多账号启用时按「并行账号数」同时跑，定时任务每轮也并行处理一批。</p>
           <label class="field inline-toggle">
             <input type="checkbox" id="aiAutoPublish" checked />
             <span>生成后自动发布（关闭则仅保存为草稿）</span>
           </label>
           <label class="field inline-toggle">
             <input type="checkbox" id="aiAttachImages" checked />
-            <span>自动附带相关代币图片（按重点代币下载公开图标，失败则发纯文字）</span>
+            <span>自动附带配图（优先新闻图 + 代币走势图；都失败则纯文字发帖）</span>
           </label>
           <label class="field inline-toggle">
             <input type="checkbox" id="aiPreventDuplicate" checked />
             <span>避免重复发帖（与已发内容相似时自动重试或跳过）</span>
           </label>
           <div class="form-row">
-            <button class="btn btn-secondary" id="btnSaveAiConfig">保存 AI 配置</button>
-            <button class="btn btn-secondary" id="btnTestAi">测试 AI（自动匹配模型）</button>
             <button class="btn btn-secondary" id="btnAiGenerateDraft">立即生成草稿</button>
             <button class="btn btn-accent" id="btnAiRunNow">开启并立即托管</button>
             <button class="btn btn-secondary btn-danger hidden" id="btnAiCancelHosting">取消托管</button>
@@ -535,7 +534,7 @@
         <div class="view-header settings-header">
           <div>
             <h2>代币地址列表</h2>
-            <p class="hint">用币安公开 API 同步全部现货 + Alpha，并自动填写合约地址。只有你手动改过的合约不会被覆盖；现货/合约用左侧小标签区分。</p>
+            <p class="hint">用币安公开 API 同步全部现货 + Alpha + U 本位合约（含 TradFi，如 STXX），并自动填写现货/Alpha 合约地址。只有你手动改过的合约不会被覆盖；左侧小标签区分类型。</p>
           </div>
           <div class="form-row" style="gap:8px; flex-wrap:wrap">
             <button type="button" class="btn btn-secondary btn-sm" id="btnSyncBinanceTokens">从币安同步全部</button>
@@ -1039,6 +1038,6 @@
     </div>
   </dialog>
 
-  <script src="/app.js?v=61"></script>
+  <script src="/app.js?v=72"></script>
 </body>
 </html>
