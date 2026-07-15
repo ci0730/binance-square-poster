@@ -1522,6 +1522,89 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   vertical-align: middle;
 }
 
+/* 代币配置行：强制在表格可视宽度内换行，禁止把芯片挤成横向一长条 */
+.ai-hosted-config-row > td {
+  white-space: normal !important;
+  vertical-align: top;
+  width: 100%;
+  max-width: 0;
+  overflow: visible;
+}
+
+.ai-hosted-config-row .ai-hosted-account-body {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.ai-hosted-account-body .token-picker,
+.ai-host-token-picker.token-picker,
+.hot-token-picker.token-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  margin-top: 8px;
+}
+
+.hot-token-panel {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(246, 70, 93, 0.28);
+  border-radius: 10px;
+  background: rgba(246, 70, 93, 0.05);
+}
+
+.hot-token-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.hot-token-title-wrap {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.hot-token-title-wrap .hint {
+  margin: 4px 0 0;
+}
+
+.hot-token-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.token-chip.hot {
+  border-color: rgba(246, 70, 93, 0.45);
+  background: rgba(246, 70, 93, 0.08);
+}
+
+.token-chip.hot.active {
+  border-color: #f6465d;
+  background: rgba(246, 70, 93, 0.18);
+  color: #ff8a9a;
+}
+
+.token-chip .token-chip-rate {
+  font-size: 0.72rem;
+  font-weight: 600;
+  opacity: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-chip.hot .token-chip-rate {
+  color: #f6465d;
+}
+
 .ai-report-table th {
   position: sticky;
   top: 0;
@@ -1689,7 +1772,7 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   padding: 0 !important;
   white-space: normal !important;
   overflow: visible;
-  /* 强制 colspan 单元格按表格可视宽度换行，避免代币被撑成横向滚动条 */
+  width: 100%;
   max-width: 0;
 }
 
@@ -1697,6 +1780,8 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   display: none;
   padding: 12px 14px 16px;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   box-sizing: border-box;
 }
 
@@ -1708,14 +1793,17 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   margin-top: 12px;
   width: 100%;
   min-width: 0;
+  max-width: 100%;
 }
 
 .ai-hosted-account-body .token-picker,
-.ai-host-token-picker.token-picker {
+.ai-host-token-picker.token-picker,
+.hot-token-picker.token-picker {
   display: flex;
   flex-wrap: wrap;
   width: 100%;
   max-width: 100%;
+  min-width: 0;
   overflow: visible;
   margin-top: 8px;
 }

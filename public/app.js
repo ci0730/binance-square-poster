@@ -2741,6 +2741,8 @@ let aiStyleReferencesCache = [];
 let aiHostedExpanded = new Set();
 /** 完整托管账号列表缓存（搜索筛选时仍保留未显示行） */
 let aiHostedAccountsCache = [];
+/** 币安负资金费率热点代币缓存 */
+let aiHotTokensCache = { tokens: [], fetchedAt: 0 };
 /** @type {Array<{id:string,label:string,models:Array<{id:string,label:string}>,keyHint:string,keyUrl:string,defaultModel:string,allowCustomBaseUrl?:boolean,allowCustomModel?:boolean}>} */
 let aiProvidersCache = [];
 let aiProfilesCache = [];
@@ -3654,11 +3656,27 @@ function renderHostedAccountsList(data) {
                   <div class="ai-hosted-account-body ${expanded ? "is-open" : ""}" id="aiHostBody-${id}">
                     <div class="ai-hosted-config-block">
                       <span class="ai-hosted-config-label">目标代币</span>
-                      <p class="hint">不选则根据新闻自动轮换主流币。风格 / AI / 观点已可在上表直接修改。</p>
+                      <p class="hint">不选则根据新闻自动轮换主流币。点选下方芯片即加入该账号；也可从「热点代币」一键加入负资金费率合约。</p>
                       <div class="token-picker ai-host-token-picker" data-account-id="${id}"></div>
                       <div class="token-custom-add">
-                        <input type="text" class="ai-host-custom-token-input" data-account-id="${id}" placeholder="自定义代币，如 PEPE" maxlength="10" autocomplete="off" />
+                        <input type="text" class="ai-host-custom-token-input" data-account-id="${id}" placeholder="自定义代币，如 PEPE" maxlength="16" autocomplete="off" />
                         <button type="button" class="btn btn-secondary btn-sm ai-host-add-token" data-account-id="${id}">添加</button>
+                      </div>
+                      <div class="hot-token-panel" data-account-id="${id}">
+                        <div class="hot-token-head">
+                          <div class="hot-token-title-wrap">
+                            <span class="ai-hosted-config-label" style="margin:0">热点代币 · 负资金费率</span>
+                            <p class="hint">来自币安 U 本位永续：资金费率越负，空头越挤，越适合蹭行情。点击即可加入上方目标代币。</p>
+                          </div>
+                          <div class="hot-token-actions">
+                            <button type="button" class="btn btn-ghost btn-sm ai-host-refresh-hot" data-account-id="${id}">刷新热点</button>
+                            <button type="button" class="btn btn-secondary btn-sm ai-host-add-hot-selected" data-account-id="${id}">加入已勾选</button>
+                            <button type="button" class="btn btn-secondary btn-sm ai-host-add-hot-all" data-account-id="${id}">全部加入</button>
+                          </div>
+                        </div>
+                        <div class="token-picker hot-token-picker" data-account-id="${id}">
+                          <span class="hint">展开后自动加载…</span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -3711,14 +3729,33 @@ function renderHostedAccountsList(data) {
       btn.textContent = open ? "收起代币" : "代币";
       if (open) {
         aiHostedExpanded.add(id);
-        // 展开后滚到可视区，确保全部芯片可见
         requestAnimationFrame(() => {
           body.scrollIntoView({ block: "nearest", behavior: "smooth" });
         });
+        loadHotTokensForAccount(id);
       } else {
         aiHostedExpanded.delete(id);
       }
     });
+  });
+
+  container.querySelectorAll(".ai-host-refresh-hot").forEach((btn) => {
+    btn.addEventListener("click", () => loadHotTokensForAccount(btn.dataset.accountId, { force: true }));
+  });
+
+  container.querySelectorAll(".ai-host-add-hot-selected").forEach((btn) => {
+    btn.addEventListener("click", () => addSelectedHotTokensToAccount(btn.dataset.accountId));
+  });
+
+  container.querySelectorAll(".ai-host-add-hot-all").forEach((btn) => {
+    btn.addEventListener("click", () => addAllHotTokensToAccount(btn.dataset.accountId));
+  });
+
+  // 已展开的账号刷新列表后继续显示热点
+  hosted.forEach((host) => {
+    if (aiHostedExpanded.has(host.accountId)) {
+      loadHotTokensForAccount(host.accountId);
+    }
   });
 
   container.querySelectorAll(".ai-host-add-token").forEach((btn) => {
@@ -3888,6 +3925,125 @@ function renderTokenPickerIn(container, presetTokens = [], selected = [], custom
       onUpdate?.();
     });
   });
+}
+
+function formatFundingRateLabel(percent) {
+  const n = Number(percent);
+  if (!Number.isFinite(n)) return "";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(3)}%`;
+}
+
+function ensureHotTokenInTargets(accountId, symbol, { select = true } = {}) {
+  const tokenPicker = document.querySelector(`.ai-host-token-picker[data-account-id="${accountId}"]`);
+  if (!tokenPicker || !symbol) return;
+  const preset = new Set(aiUiOptions.availableTokens || DEFAULT_AVAILABLE_TOKENS);
+  if (!aiHostedCustomTokens[accountId]) aiHostedCustomTokens[accountId] = [];
+  const current = new Set(collectSelectedTokensFromContainer(tokenPicker));
+  if (select) current.add(symbol);
+  else current.delete(symbol);
+  if (!preset.has(symbol) && !aiHostedCustomTokens[accountId].includes(symbol)) {
+    aiHostedCustomTokens[accountId].push(symbol);
+  }
+  renderTokenPickerIn(
+    tokenPicker,
+    aiUiOptions.availableTokens,
+    [...current],
+    aiHostedCustomTokens[accountId],
+    { onUpdate: () => syncVisibleHostedRowsIntoCache() },
+  );
+  syncVisibleHostedRowsIntoCache();
+}
+
+async function loadHotTokensForAccount(accountId, { force = false } = {}) {
+  const picker = document.querySelector(`.hot-token-picker[data-account-id="${accountId}"]`);
+  if (!picker) return;
+  picker.innerHTML = `<span class="hint">正在拉取币安负资金费率热点…</span>`;
+  try {
+    const cache = aiHotTokensCache || { tokens: [], fetchedAt: 0 };
+    const fresh =
+      force ||
+      !cache.tokens?.length ||
+      Date.now() - (cache.fetchedAt || 0) > 60_000;
+    if (fresh) {
+      const res = await fetch(`/api/market/hot-tokens?limit=24${force ? "&force=1" : ""}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "热点代币加载失败");
+      aiHotTokensCache = {
+        tokens: data.tokens || [],
+        fetchedAt: data.fetchedAt || Date.now(),
+      };
+    }
+    renderHotTokenPicker(accountId, aiHotTokensCache.tokens);
+  } catch (err) {
+    picker.innerHTML = `<span class="hint" style="color:var(--error)">${escapeHtml(err.message || "热点代币加载失败")}</span>`;
+  }
+}
+
+function renderHotTokenPicker(accountId, tokens = []) {
+  const picker = document.querySelector(`.hot-token-picker[data-account-id="${accountId}"]`);
+  if (!picker) return;
+  if (!tokens.length) {
+    picker.innerHTML = `<span class="hint">当前没有明显的负资金费率合约（可点「刷新热点」重试）</span>`;
+    return;
+  }
+  const selected = new Set(collectSelectedTokensFromContainer(
+    document.querySelector(`.ai-host-token-picker[data-account-id="${accountId}"]`),
+  ));
+  picker.innerHTML = tokens
+    .map((item) => {
+      const symbol = parseTokenSymbol(item.symbol);
+      const rate = formatFundingRateLabel(item.fundingRatePercent);
+      return `
+        <button type="button" class="token-chip hot ${selected.has(symbol) ? "active" : ""}" data-token="${escapeHtml(symbol)}" title="资金费率 ${rate}（点击加入目标代币）">
+          <span class="token-chip-label">$${escapeHtml(symbol)}</span>
+          <span class="token-chip-rate">${escapeHtml(rate)}</span>
+        </button>`;
+    })
+    .join("");
+
+  picker.querySelectorAll(".token-chip.hot").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const symbol = parseTokenSymbol(btn.dataset.token);
+      const willSelect = !btn.classList.contains("active");
+      btn.classList.toggle("active", willSelect);
+      ensureHotTokenInTargets(accountId, symbol, { select: willSelect });
+    });
+  });
+}
+
+function addSelectedHotTokensToAccount(accountId) {
+  const hotPicker = document.querySelector(`.hot-token-picker[data-account-id="${accountId}"]`);
+  if (!hotPicker) return;
+
+  const hotSelected = [...hotPicker.querySelectorAll(".token-chip.hot.active")]
+    .map((el) => parseTokenSymbol(el.dataset.token))
+    .filter(Boolean);
+  if (!hotSelected.length) {
+    showAiMessage("请先在热点代币里点选要加入的币", "err");
+    return;
+  }
+
+  for (const symbol of hotSelected) {
+    ensureHotTokenInTargets(accountId, symbol, { select: true });
+  }
+  renderHotTokenPicker(accountId, aiHotTokensCache.tokens || []);
+  showAiMessage(`已加入 ${hotSelected.length} 个热点代币到目标列表`, "ok");
+}
+
+function addAllHotTokensToAccount(accountId) {
+  const tokens = (aiHotTokensCache.tokens || [])
+    .map((item) => parseTokenSymbol(item.symbol))
+    .filter(Boolean);
+  if (!tokens.length) {
+    showAiMessage("暂无热点代币，请先点「刷新热点」", "err");
+    return;
+  }
+  for (const symbol of tokens) {
+    ensureHotTokenInTargets(accountId, symbol, { select: true });
+  }
+  renderHotTokenPicker(accountId, aiHotTokensCache.tokens);
+  showAiMessage(`已将 ${tokens.length} 个负费率热点全部加入目标代币`, "ok");
 }
 
 function renderTokenPicker(presetTokens = [], selected = [], customTokens = []) {
