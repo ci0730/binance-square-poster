@@ -430,41 +430,39 @@
           <p class="hint">选择账号、风格与发帖节奏；保存后后台将按计划自动发帖</p>
         </div>
         <div class="panel">
-          <div class="ai-host-top-grid">
-            <div class="ai-host-top-main">
-              <label class="field inline-toggle">
+          <div class="ai-host-top-bar">
+            <div class="ai-host-top-toggles">
+              <label class="field inline-toggle compact-toggle">
                 <input type="checkbox" id="aiEnabled" />
                 <span>启用 AI 自动托管</span>
               </label>
-            </div>
-            <div class="ai-host-provider-card">
-              <p class="hint" id="aiIntroHint">
-                在「API 管理」可添加多个 AI；此处可编辑默认 AI。生成帖子并以 $BTC、$SOL 等标签生成底部可点击按钮。
-                <a id="aiKeyHelpLink" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
-              </p>
-              <label class="field inline-toggle">
+              <label class="field inline-toggle compact-toggle">
                 <input type="checkbox" id="aiUseNews" checked />
-                <span>结合最新加密资讯写帖（自动抓取新闻与行情）</span>
+                <span>结合最新资讯/行情</span>
               </label>
-              <p class="hint">勾选后会注入新闻标题，可能偏离范文结构；若以「参考风格」为主，建议关闭，仍会使用币安真实行情价格。</p>
-              <div class="ai-provider-grid">
-                <label class="field compact-field">
-                  <span>AI 服务商</span>
-                  <select id="aiProviderSelect" class="account-select"></select>
-                </label>
-                <label class="field compact-field hidden" id="aiBaseUrlWrap">
-                  <span>API Base URL</span>
-                  <input type="text" id="aiBaseUrlInput" placeholder="https://api.xxx.com 或 .../v1/chat/completions" autocomplete="off" />
-                </label>
+              <a id="aiKeyHelpLink" class="ai-host-key-link" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
+            </div>
+            <p class="hint ai-host-top-hint" id="aiIntroHint">默认 AI 可在此改；多套 API 请到「API 管理」。以参考风格为主时可关资讯。</p>
+            <div class="ai-host-provider-compact">
+              <label class="field compact-field">
+                <span>AI 服务商</span>
+                <select id="aiProviderSelect" class="account-select"></select>
+              </label>
+              <label class="field compact-field hidden" id="aiBaseUrlWrap">
+                <span>API Base URL</span>
+                <input type="text" id="aiBaseUrlInput" placeholder="https://api.xxx.com/v1/chat/completions" autocomplete="off" />
+              </label>
+              <label class="field compact-field">
+                <span>API Key</span>
+                <input type="password" id="aiApiKeyInput" placeholder="留空表示不修改" autocomplete="off" />
+              </label>
+              <div id="aiModelSelectWrap" class="field compact-field ai-model-row">
+                <span>模型</span>
+                <select id="aiModelSelect" class="account-select"></select>
               </div>
-              <div class="form-row form-row-stack">
-                <input type="password" id="aiApiKeyInput" placeholder="API Key（留空表示不修改）" autocomplete="off" />
-                <div id="aiModelSelectWrap" class="ai-model-row">
-                  <select id="aiModelSelect" class="account-select"></select>
-                </div>
-                <div id="aiCustomModelWrap" class="ai-model-row hidden">
-                  <input type="text" id="aiCustomModelInput" placeholder="自定义模型名，如 gpt-4o-mini" autocomplete="off" />
-                </div>
+              <div id="aiCustomModelWrap" class="field compact-field ai-model-row hidden">
+                <span>模型</span>
+                <input type="text" id="aiCustomModelInput" placeholder="如 gpt-4o-mini" autocomplete="off" />
               </div>
             </div>
           </div>
@@ -1041,6 +1039,6 @@
     </div>
   </dialog>
 
-  <script src="/app.js?v=60"></script>
+  <script src="/app.js?v=61"></script>
 </body>
 </html>

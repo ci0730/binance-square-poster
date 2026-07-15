@@ -1838,29 +1838,90 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   margin-bottom: 12px;
 }
 
-.ai-host-top-grid {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.9fr) minmax(280px, 1.4fr);
-  gap: 16px 20px;
-  align-items: start;
-  margin-bottom: 18px;
-}
-
-.ai-host-provider-card {
-  padding: 14px 16px;
+.ai-host-top-bar {
+  margin-bottom: 14px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-2, rgba(255, 255, 255, 0.03));
 }
 
-.ai-host-provider-card .inline-toggle {
-  margin: 8px 0 4px;
+.ai-host-top-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 6px;
 }
 
-@media (max-width: 900px) {
-  .ai-host-top-grid {
+.ai-host-top-toggles .compact-toggle {
+  margin: 0;
+}
+
+.ai-host-key-link {
+  font-size: 0.8rem;
+  margin-left: auto;
+}
+
+.ai-host-top-hint {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.ai-host-provider-compact {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 10px;
+  align-items: end;
+}
+
+.ai-host-provider-compact .compact-field {
+  margin: 0;
+  gap: 4px;
+}
+
+.ai-host-provider-compact .compact-field > span {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ai-host-provider-compact .account-select,
+.ai-host-provider-compact input[type="text"],
+.ai-host-provider-compact input[type="password"] {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 0.84rem;
+}
+
+.ai-host-provider-compact .ai-model-row {
+  width: 100%;
+}
+
+.ai-host-provider-compact #aiBaseUrlWrap:not(.hidden) {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1100px) {
+  .ai-host-provider-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-host-provider-compact {
     grid-template-columns: 1fr;
   }
+  .ai-host-key-link {
+    margin-left: 0;
+  }
+}
+
+/* 兼容旧类名，避免残留样式撑高 */
+.ai-host-top-grid,
+.ai-host-provider-card {
+  display: contents;
 }
 
 .ai-provider-grid .field input[type="text"] {
