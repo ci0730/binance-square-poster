@@ -52,7 +52,7 @@ import { getAiSettingsPublic, saveAiSettings, resolveAiCredentials, readAiSettin
 import { listAiProvidersPublic } from "./lib/ai-providers.js";
 import { generateSquarePost, testAiApiKey } from "./lib/ai-generator.js";
 import { getAiSchedulerStatus, runAiHostedCycle, startAiScheduler } from "./lib/ai-scheduler.js";
-import { buildCryptoContext, fetchRegistryTokenQuotes, syncBinanceTokenRegistry } from "./lib/crypto-context.js";
+import { buildCryptoContext, fetchRegistryTokenQuotes, syncBinanceTokenRegistry, fetchHotNegativeFundingTokens } from "./lib/crypto-context.js";
 import {
   listTokenRegistryPublic,
   upsertTokenRegistryEntry,
@@ -881,6 +881,14 @@ const server = http.createServer(async (req, res) => {
         ...result,
         settings: listTokenRegistryPublic().settings,
       });
+      return;
+    }
+
+    if (pathname === "/api/market/hot-tokens" && req.method === "GET") {
+      const limit = Math.max(1, Math.min(40, parseInt(url.searchParams.get("limit"), 10) || 18));
+      const force = url.searchParams.get("force") === "1";
+      const result = await fetchHotNegativeFundingTokens({ limit, force });
+      json(res, 200, { ok: true, ...result });
       return;
     }
 
