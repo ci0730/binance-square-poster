@@ -3219,6 +3219,10 @@ async function testAiProfileFromModal() {
     showAiProfileModalMessage("请先填写 API Key", "err");
     return;
   }
+  if (profile.provider === "custom" && !profile.model) {
+    showAiProfileModalMessage("请填写自定义模型名（如 gpt-4o-mini），不要留空", "err");
+    return;
+  }
   showAiProfileModalMessage("正在测试 AI 连接...", "info");
   try {
     const res = await fetch("/api/ai/test", {
@@ -3229,7 +3233,7 @@ async function testAiProfileFromModal() {
         apiKey: profile.apiKey || undefined,
         provider: profile.provider,
         baseUrl: profile.baseUrl || undefined,
-        model: profile.model,
+        model: profile.model || undefined,
       }),
     });
     const data = await res.json();
