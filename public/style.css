@@ -1750,6 +1750,31 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   margin-bottom: 12px;
 }
 
+.ai-host-top-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(280px, 1.4fr);
+  gap: 16px 20px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.ai-host-provider-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+
+.ai-host-provider-card .inline-toggle {
+  margin: 8px 0 4px;
+}
+
+@media (max-width: 900px) {
+  .ai-host-top-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .ai-provider-grid .field input[type="text"] {
   width: 100%;
   padding: 9px 12px;

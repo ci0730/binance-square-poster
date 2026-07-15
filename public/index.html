@@ -62,7 +62,7 @@
           <span class="nav-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 9.5 8.5 3 9.5l5 4.5-1.5 6.5L12 17l5.5 3.5L16 14l5-4.5-6.5-1Z"/></svg>
           </span>
-          <span class="nav-label">AI 发布设置</span>
+          <span class="nav-label">文案风格设置</span>
         </button>
         <button type="button" class="nav-item" data-view="ai-host">
           <span class="nav-icon" aria-hidden="true">
@@ -320,7 +320,7 @@
           <div id="apiAiProfilesList" class="api-ai-profiles-list"></div>
           <div class="form-row">
             <button type="button" class="btn btn-primary" id="btnAddAiProfile">+ 添加 AI API</button>
-            <button type="button" class="btn btn-ghost" id="btnGoAiSettings">前往 AI 发布设置</button>
+            <button type="button" class="btn btn-ghost" id="btnGoAiSettings">前往文案风格设置</button>
           </div>
           <p id="apiAiManageMessage" class="message"></p>
         </div>
@@ -372,41 +372,13 @@
         </section>
       </section>
 
-      <!-- AI 发布设置 -->
+      <!-- 文案风格设置 -->
       <section id="view-ai" class="view-panel hidden">
         <div class="view-header">
-          <h2>AI 发布设置</h2>
-          <p class="hint">配置 AI 服务商与参考风格；自动托管请在「AI 托管」页设置</p>
+          <h2>文案风格设置</h2>
+          <p class="hint">上传或粘贴范文，保存后即可在「AI 托管」里选择「参考·xxx」；AI 服务商与资讯开关请到「AI 托管」页配置</p>
         </div>
         <div class="panel">
-          <p class="hint" id="aiIntroHint">
-            在「API 管理」可添加多个 AI；此处可编辑默认 AI。结合最新资讯自动生成代币帖子，并以 $BTC、$SOL 等标签生成底部可点击按钮。
-            <a id="aiKeyHelpLink" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
-          </p>
-          <label class="field inline-toggle">
-            <input type="checkbox" id="aiUseNews" checked />
-            <span>结合最新加密资讯写帖（自动抓取新闻与行情）</span>
-          </label>
-          <div class="ai-provider-grid">
-            <label class="field compact-field">
-              <span>AI 服务商</span>
-              <select id="aiProviderSelect" class="account-select"></select>
-            </label>
-            <label class="field compact-field hidden" id="aiBaseUrlWrap">
-              <span>API Base URL</span>
-              <input type="text" id="aiBaseUrlInput" placeholder="https://your-api.com/v1/chat/completions" autocomplete="off" />
-            </label>
-          </div>
-          <div class="form-row form-row-stack">
-            <input type="password" id="aiApiKeyInput" placeholder="API Key（留空表示不修改）" autocomplete="off" />
-            <div id="aiModelSelectWrap" class="ai-model-row">
-              <select id="aiModelSelect" class="account-select"></select>
-            </div>
-            <div id="aiCustomModelWrap" class="ai-model-row hidden">
-              <input type="text" id="aiCustomModelInput" placeholder="自定义模型名，如 gpt-4o-mini" autocomplete="off" />
-            </div>
-          </div>
-
           <div class="ai-style-ref-section">
             <div class="ai-hosted-head">
               <div>
@@ -444,8 +416,8 @@
           </div>
 
           <div class="form-row">
-            <button class="btn btn-secondary" id="btnSaveAiSettings">保存 AI 设置</button>
-            <button class="btn btn-secondary" id="btnTestAi">测试 AI</button>
+            <button class="btn btn-secondary" id="btnSaveAiSettings">保存风格设置</button>
+            <button class="btn btn-ghost" id="btnGoAiHostFromStyles">前往 AI 托管</button>
           </div>
           <p id="aiSettingsMessage" class="message"></p>
         </div>
@@ -458,10 +430,44 @@
           <p class="hint">选择账号、风格与发帖节奏；保存后后台将按计划自动发帖</p>
         </div>
         <div class="panel">
-          <label class="field inline-toggle">
-            <input type="checkbox" id="aiEnabled" />
-            <span>启用 AI 自动托管</span>
-          </label>
+          <div class="ai-host-top-grid">
+            <div class="ai-host-top-main">
+              <label class="field inline-toggle">
+                <input type="checkbox" id="aiEnabled" />
+                <span>启用 AI 自动托管</span>
+              </label>
+            </div>
+            <div class="ai-host-provider-card">
+              <p class="hint" id="aiIntroHint">
+                在「API 管理」可添加多个 AI；此处可编辑默认 AI。生成帖子并以 $BTC、$SOL 等标签生成底部可点击按钮。
+                <a id="aiKeyHelpLink" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
+              </p>
+              <label class="field inline-toggle">
+                <input type="checkbox" id="aiUseNews" checked />
+                <span>结合最新加密资讯写帖（自动抓取新闻与行情）</span>
+              </label>
+              <p class="hint">勾选后会注入新闻标题，可能偏离范文结构；若以「参考风格」为主，建议关闭，仍会使用币安真实行情价格。</p>
+              <div class="ai-provider-grid">
+                <label class="field compact-field">
+                  <span>AI 服务商</span>
+                  <select id="aiProviderSelect" class="account-select"></select>
+                </label>
+                <label class="field compact-field hidden" id="aiBaseUrlWrap">
+                  <span>API Base URL</span>
+                  <input type="text" id="aiBaseUrlInput" placeholder="https://your-api.com/v1/chat/completions" autocomplete="off" />
+                </label>
+              </div>
+              <div class="form-row form-row-stack">
+                <input type="password" id="aiApiKeyInput" placeholder="API Key（留空表示不修改）" autocomplete="off" />
+                <div id="aiModelSelectWrap" class="ai-model-row">
+                  <select id="aiModelSelect" class="account-select"></select>
+                </div>
+                <div id="aiCustomModelWrap" class="ai-model-row hidden">
+                  <input type="text" id="aiCustomModelInput" placeholder="自定义模型名，如 gpt-4o-mini" autocomplete="off" />
+                </div>
+              </div>
+            </div>
+          </div>
 
           <div class="ai-hosted-section">
             <div class="ai-hosted-head">
@@ -515,6 +521,7 @@
           </label>
           <div class="form-row">
             <button class="btn btn-secondary" id="btnSaveAiConfig">保存 AI 配置</button>
+            <button class="btn btn-secondary" id="btnTestAi">测试 AI</button>
             <button class="btn btn-secondary" id="btnAiGenerateDraft">立即生成草稿</button>
             <button class="btn btn-accent" id="btnAiRunNow">开启并立即托管</button>
             <button class="btn btn-secondary btn-danger hidden" id="btnAiCancelHosting">取消托管</button>
@@ -1034,6 +1041,6 @@
     </div>
   </dialog>
 
-  <script src="/app.js?v=55"></script>
+  <script src="/app.js?v=56"></script>
 </body>
 </html>

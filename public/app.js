@@ -1415,6 +1415,7 @@ function bindEvents() {
   $("#btnGoAccounts")?.addEventListener("click", () => switchView("accounts"));
   $("#btnAddAiProfile")?.addEventListener("click", () => openAiProfileModal(null));
   $("#btnGoAiSettings")?.addEventListener("click", () => switchView("ai"));
+  $("#btnGoAiHostFromStyles")?.addEventListener("click", () => switchView("ai-host"));
   $("#btnAddToken")?.addEventListener("click", () => openTokenModal(null));
   $("#btnRefreshTokenQuotes")?.addEventListener("click", () => refreshTokenQuotes(true));
   $("#btnSyncBinanceTokens")?.addEventListener("click", syncBinanceTokensFromUi);
@@ -1495,7 +1496,7 @@ function bindEvents() {
   $("#btnAddAiStyleRef")?.addEventListener("click", addAiStyleReferenceFromUi);
   $("#aiStyleRefFileInput")?.addEventListener("change", onAiStyleRefFileSelected);
   $("#aiStyleRefList")?.addEventListener("click", onAiStyleRefListClick);
-  $("#btnTestAi").addEventListener("click", testAiApi);
+  $("#btnTestAi")?.addEventListener("click", testAiApi);
   $("#aiProviderSelect")?.addEventListener("change", onAiProviderChange);
   $("#btnAddCustomToken")?.addEventListener("click", addCustomTokenFromInput);
   $("#aiCustomTokenInput")?.addEventListener("keydown", (e) => {
@@ -3411,7 +3412,7 @@ async function applyAiConfigToUI(data) {
   if ($("#aiPreventDuplicate")) {
     $("#aiPreventDuplicate").checked = data.preventDuplicatePosts !== false;
   }
-  $("#aiUseNews").checked = data.useNews !== false;
+  if ($("#aiUseNews")) $("#aiUseNews").checked = data.useNews !== false;
   aiStyleReferencesCache = Array.isArray(data.styleReferences) ? data.styleReferences : [];
   renderAiStyleReferencesList();
 
@@ -4308,11 +4309,10 @@ function collectAiConfigFromUI() {
   };
 }
 
-/** 仅保存「AI 发布设置」页：服务商、资讯开关、参考风格（不影响托管开关与节奏） */
+/** 仅保存「文案风格设置」页：参考风格列表（不影响托管开关与节奏） */
 async function saveAiSettingsOnly(overrides = {}, { silent = false } = {}) {
-  const payload = { ...collectAiProviderSettingsFromUI(), ...overrides };
-  if (!payload.apiKey) delete payload.apiKey;
-  if (!silent) showAiSettingsMessage("正在保存 AI 设置…", "info");
+  const payload = { styleReferences: aiStyleReferencesCache, ...overrides };
+  if (!silent) showAiSettingsMessage("正在保存风格设置…", "info");
   try {
     const res = await fetch("/api/ai/config", {
       method: "POST",
@@ -4326,7 +4326,7 @@ async function saveAiSettingsOnly(overrides = {}, { silent = false } = {}) {
     }
     const data = normalizeAiConfigResponse(raw);
     await applyAiConfigToUI(data);
-    if (!silent) showAiSettingsMessage("AI 设置已保存", "ok");
+    if (!silent) showAiSettingsMessage("风格设置已保存", "ok");
     return data;
   } catch {
     if (!silent) showAiSettingsMessage("无法连接本地服务", "err");
