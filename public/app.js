@@ -4180,8 +4180,11 @@ async function previewAiStyleReference(sampleTextOverride, label = "") {
   const payload = {
     sampleText,
     useNews: providerCfg.useNews,
-    selectedTokens: host?.selectedTokens,
-    marketSentiment: host?.marketSentiment,
+    selectedTokens:
+      Array.isArray(host?.selectedTokens) && host.selectedTokens.length
+        ? host.selectedTokens
+        : ["BTC", "ETH"],
+    marketSentiment: host?.marketSentiment || "auto",
   };
   const profileId = host?.aiProfileId || defaultAiProfileIdCache;
   if (profileId) {
