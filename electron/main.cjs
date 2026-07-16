@@ -133,6 +133,30 @@ function waitForServer(timeoutMs = 45000) {
   });
 }
 
+function fetchJson(url, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        try {
+          resolve({
+            status: res.statusCode,
+            data: JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"),
+          });
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      reject(new Error("timeout"));
+    });
+  });
+}
+
 function isServerRunning() {
   return new Promise((resolve) => {
     const req = http.get(`${APP_URL}/api/config`, (res) => {
@@ -147,8 +171,48 @@ function isServerRunning() {
   });
 }
 
+async function isDesktopOwnedServer() {
+  try {
+    const { status, data } = await fetchJson(`${APP_URL}/api/config`);
+    return status === 200 && data?.desktopOwned === true;
+  } catch {
+    return false;
+  }
+}
+
+function freeListeningPort(port) {
+  if (process.platform !== "win32") return;
+  try {
+    const { execSync } = require("child_process");
+    const out = execSync(`netstat -ano -p tcp`, { encoding: "utf8", windowsHide: true });
+    const pids = new Set();
+    for (const line of out.split(/\r?\n/)) {
+      if (!line.includes(`:${port}`) || !/LISTENING/i.test(line)) continue;
+      const parts = line.trim().split(/\s+/);
+      const pid = Number(parts[parts.length - 1]);
+      if (pid > 0) pids.add(pid);
+    }
+    for (const pid of pids) {
+      try {
+        execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore", windowsHide: true });
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
 async function ensureServer() {
-  if (await isServerRunning()) return;
+  // 若 3456 已被外部 node（例如 Cursor/终端里另起的旧 server.js）占用，
+  // 桌面端会误以为服务已就绪，导致界面改了代码却一直连着旧进程。
+  if (await isServerRunning()) {
+    if (serverProcess || (await isDesktopOwnedServer())) return;
+    freeListeningPort(PORT);
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
   const root = getAppRoot();
   const serverPath = path.join(root, "server.js");
 
@@ -162,9 +226,12 @@ async function ensureServer() {
     logFd = fs.openSync(logPath, "a");
   }
 
+  const env = buildRuntimeEnv();
+  env.BINANCE_SQUARE_SERVER_BOOT_AT = String(Date.now());
+
   serverProcess = spawn(process.execPath, [serverPath], {
     cwd: root,
-    env: buildRuntimeEnv(),
+    env,
     stdio: logFd != null ? ["ignore", logFd, logFd] : "inherit",
     windowsHide: true,
   });

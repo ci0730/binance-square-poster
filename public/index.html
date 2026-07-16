@@ -11,7 +11,7 @@
       document.documentElement.setAttribute("data-theme", theme);
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=27" />
+  <link rel="stylesheet" href="/style.css?v=29" />
 </head>
 <body>
   <div class="app-shell">
@@ -109,6 +109,18 @@
       </nav>
 
       <div class="sidebar-footer">
+        <button
+          type="button"
+          class="vpn-signal-widget"
+          id="vpnSignalWidget"
+          title="本地 VPN 测速。点击立即刷新"
+        >
+          <span class="vpn-signal-bars" id="vpnSignalBars" aria-hidden="true">
+            <i data-bar="1"></i><i data-bar="2"></i><i data-bar="3"></i><i data-bar="4"></i>
+          </span>
+          <span class="vpn-signal-text" id="vpnSignalText">…</span>
+          <span class="vpn-signal-kind" id="vpnSignalKind">测速</span>
+        </button>
         <button type="button" class="theme-toggle-btn" id="btnThemeToggle" title="切换白天/黑夜模式">
           <span class="theme-toggle-icon" id="themeToggleIcon" aria-hidden="true"></span>
           <span id="themeToggleLabel">白天模式</span>
@@ -164,7 +176,6 @@
           <div class="home-panel-head">
             <h3>已发布帖子 <span id="homePublishedListHint" class="draft-stats"></span></h3>
             <div class="header-actions">
-              <button type="button" class="btn btn-secondary btn-sm" id="btnHomeRefreshStats">刷新互动数据</button>
               <button type="button" class="btn btn-ghost btn-sm" id="btnHomeViewAllPublished">查看全部</button>
             </div>
           </div>
@@ -429,6 +440,7 @@
         <div class="view-header">
           <h2>AI 托管</h2>
           <p class="hint">选择账号、风格与发帖节奏；修改会自动保存，后台按计划发帖</p>
+          <p id="aiHostingLockTip" class="message warn hidden" role="status"></p>
         </div>
         <div class="panel">
           <div class="ai-host-top-bar">
@@ -473,9 +485,10 @@
                 <input type="number" id="aiPostsPerRunInput" value="1" min="1" max="5" />
                 条
               </label>
-              <label class="inline-label">
-                每日上限
+              <label class="inline-label" title="每个启用托管的账号各自独立计数，互不影响">
+                单账号每日上限
                 <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
+                条
               </label>
               <label class="inline-label" title="多账号同时写稿/发帖的路数，建议 2–5">
                 并行账号数
@@ -518,6 +531,7 @@
             <div class="ai-hosted-head">
               <h3>托管账号列表</h3>
               <div class="ai-hosted-head-actions">
+                <button type="button" class="btn btn-secondary btn-sm" id="btnHostRefreshMetrics" title="经全局代理拉取浏览量/点赞/评论（公开数据，不占用账号 SOCKS）">一键获取互动</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btnHostSelectAll" title="勾选全部账号">全选</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btnHostSelectPage" title="仅勾选本页最多 10 个">本页</button>
                 <button type="button" class="btn btn-ghost btn-sm" id="btnHostClearPage" title="取消勾选：上次全选则取消全部，上次本页则取消本页">取消</button>
@@ -533,16 +547,17 @@
                   <option value="all">全部账号</option>
                   <option value="page">本页账号</option>
                 </select>
-                <button type="button" class="btn btn-accent btn-sm" id="btnBatchRandomAllEveryPost" title="每次发文从软件内代币地址列表随机抽 2 个">每次随机·全部代币</button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btnBatchRandomTokens" title="现在固定写 2 个主流币（不会每次重抽）">固定随机 2 个</button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btnBatchRandomHotTokens" title="现在固定写入热点币">固定随机热点</button>
-                <button type="button" class="btn btn-ghost btn-sm" id="btnBatchClearTokens" title="清空后按新闻自动轮换主流币">清空（自动轮换）</button>
+                <button type="button" class="btn btn-secondary btn-sm ai-batch-scheme-btn" id="btnBatchRandomAllEveryPost" data-batch-scheme="random_all" title="每次发文从软件内代币地址列表随机抽 2 个">每次随机·全部代币</button>
+                <button type="button" class="btn btn-secondary btn-sm ai-batch-scheme-btn" id="btnBatchRandomTokens" data-batch-scheme="fixed_preset" title="现在固定写 2 个主流币（不会每次重抽）">固定随机 2 个</button>
+                <button type="button" class="btn btn-secondary btn-sm ai-batch-scheme-btn" id="btnBatchRandomHotTokens" data-batch-scheme="fixed_hot" title="现在固定写入热点币">固定随机热点</button>
+                <button type="button" class="btn btn-secondary btn-sm ai-batch-scheme-btn" id="btnBatchClearTokens" data-batch-scheme="auto" title="清空后按新闻自动轮换主流币">清空（自动轮换）</button>
+                <span class="ai-batch-scheme-status" id="aiBatchSchemeStatus" aria-live="polite"></span>
               </div>
               <div class="ai-batch-token-row">
                 <input type="text" id="aiBatchCustomTokensInput" class="ai-batch-token-input" placeholder="自定义代币，如 BTC ETH PEPE（空格/逗号分隔）" maxlength="120" autocomplete="off" />
-                <button type="button" class="btn btn-secondary btn-sm" id="btnBatchApplyCustomTokens">应用到所选账号</button>
+                <button type="button" class="btn btn-secondary btn-sm ai-batch-scheme-btn" id="btnBatchApplyCustomTokens" data-batch-scheme="custom" title="把输入框里的代币固定写入所选账号">应用到所选账号</button>
               </div>
-              <p class="hint">「每次随机·全部代币」：每次发文从软件内「代币地址列表」重抽 2 个（不联网）。其余按钮是一次性写入固定列表。改完会自动保存。</p>
+              <p class="hint">点选上方方案会高亮当前用法。「每次随机·全部代币」：每次发文从软件内「代币地址列表」重抽 2 个（不联网）。其余是一次性写入固定列表。改完会自动保存。</p>
             </div>
             <div id="aiHostedAccountsList" class="ai-hosted-accounts-list"></div>
             <div id="aiHostedPagination" class="ai-hosted-pagination"></div>
@@ -569,13 +584,9 @@
               <input type="search" id="tokenSearchInput" placeholder="搜索符号、名称或合约地址…" autocomplete="off" />
             </div>
             <div class="token-refresh-settings">
-              <label class="inline-label">
-                自动刷新
-                <input type="number" id="tokenRefreshIntervalInput" value="60" min="0" max="3600" step="1" title="单位：秒；0=关闭" />
-                秒
-              </label>
-              <small class="hint">0 关闭；最小 15 秒</small>
-              <button type="button" class="btn btn-ghost btn-sm" id="btnSaveTokenRefresh">保存</button>
+              <small class="hint" id="tokenRefreshModeHint">
+                报价不再按秒轮询：启动 AI 托管时自动更新最新价，托管完整一轮后再刷新一次；也可手动点「刷新报价」。
+              </small>
             </div>
           </div>
           <div class="token-registry-meta">
@@ -622,12 +633,12 @@
             <div class="account-toolbar-filters">
               <label class="inline-label account-date-filter">
                 添加时间
-                <input type="date" id="accountDateFrom" title="起始日期" />
+                <input type="date" class="account-date-input" id="accountDateFrom" title="点击选择起始日期" />
               </label>
               <span class="account-date-sep">至</span>
               <label class="inline-label account-date-filter">
                 <span class="sr-only">结束日期</span>
-                <input type="date" id="accountDateTo" title="结束日期" />
+                <input type="date" class="account-date-input" id="accountDateTo" title="点击选择结束日期" />
               </label>
               <button type="button" class="btn btn-ghost btn-sm" id="btnAccountClearFilters">清除筛选</button>
             </div>
@@ -643,7 +654,7 @@
         <div class="view-header">
           <div>
             <h2>互动数据</h2>
-            <p class="hint">按账号查看浏览、点赞与评论；支持定时刷新与互动提醒</p>
+            <p class="hint">按账号查看浏览、点赞与评论；可开定时刷新与互动提醒。批量更新请到「AI 托管」用「一键获取互动」</p>
           </div>
         </div>
         <div class="panel">
@@ -676,7 +687,6 @@
               <input type="number" id="viewAlertThreshold" value="10" min="1" max="99999" />
               时提醒
             </label>
-            <button class="btn btn-secondary btn-sm" id="btnRefreshAllStats">刷新互动数据</button>
           </div>
           <span id="autoRefreshStatus" class="monitor-status">定时刷新未开启</span>
         </div>
@@ -1080,6 +1090,6 @@
     </div>
   </dialog>
 
-  <script src="/app.js?v=72"></script>
+  <script src="/app.js?v=79"></script>
 </body>
 </html>

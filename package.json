@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -95,7 +95,7 @@
       }
     ],
     "releaseInfo": {
-      "releaseNotes": "v1.0.7\n\n- AI 托管：批量设代币、每次随机（软件内代币列表，不联网）\n- AI 托管布局优化：节奏设置与操作按钮前置，选项改为点击变色芯片\n- 确认/提示弹窗美化为软件内深色风格，去掉系统白框\n- 隐藏主界面滚动条，保留滚轮滑动\n- 修复若干托管与弹窗交互问题"
+      "releaseNotes": "v1.0.8\n\n- AI 托管开启后锁定设置，仅「取消托管」可解锁，避免改设置与发帖计数交错\n- 取消托管时会尽快结束本轮任务\n- 侧栏 VPN 信号：对齐 Clash/Mihomo 当前节点延迟，并标注检测对象\n- 互动数据「全部账号」筛选不再被空字符串逻辑顶回旧账号\n- 代理测速与网络超时稳定性改进"
     }
   }
 }

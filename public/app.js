@@ -851,11 +851,17 @@ function buildPostAccountBlock(p, { editable = false } = {}) {
 }
 
 function getSelectedMonitorAccountId() {
-  return selectedMonitorAccountId || $("#monitorAccountSelect")?.value || loadMonitorSettings().monitorAccountId || "";
+  // "" 表示「全部账号」，不能用 || 回退，否则会误用旧账号 ID
+  const select = $("#monitorAccountSelect");
+  if (select) return String(select.value ?? "");
+  return String(selectedMonitorAccountId ?? loadMonitorSettings().monitorAccountId ?? "");
 }
 
 function getMonitorSearchQuery() {
-  return ($("#monitorSearchInput")?.value || monitorSearchQuery || "").trim().toLowerCase();
+  const input = $("#monitorSearchInput");
+  // 输入框存在时必须以框内为准；空字符串不能用 || 回退到旧变量，否则删不掉搜索词
+  if (input) return String(input.value || "").trim().toLowerCase();
+  return String(monitorSearchQuery || "").trim().toLowerCase();
 }
 
 function postMatchesMonitorSearch(post, query) {
@@ -894,14 +900,21 @@ function renderMonitorAccountSelect() {
     return;
   }
   select.disabled = false;
-  const saved = loadMonitorSettings().monitorAccountId || "";
-  let value = selectedMonitorAccountId || saved || "";
+  const saved = String(loadMonitorSettings().monitorAccountId ?? "");
+  // selectedMonitorAccountId 可能是 ""（全部账号），不能写成 selected || saved
+  let value = selectedMonitorAccountId;
+  if (value == null) value = saved;
+  value = String(value);
 
   if (accountStore.accounts.length === 1) {
     value = accountStore.accounts[0].id;
     select.innerHTML = `<option value="${accountStore.accounts[0].id}" selected>${escapeHtml(accountStore.accounts[0].name)}</option>`;
     selectedMonitorAccountId = value;
     return;
+  }
+
+  if (value && !accountStore.accounts.some((a) => a.id === value)) {
+    value = "";
   }
 
   const options = [`<option value="" ${value === "" ? "selected" : ""}>全部账号</option>`];
@@ -935,20 +948,28 @@ function updateMonitorSectionHint() {
   el.textContent = `当前显示 ${parts.join(" · ")} 的已发布帖子，可展开查看评论与互动数据。`;
 }
 
-function renderAccountSelectOptions(selectEl, selectedId) {
+function renderAccountSelectOptions(selectEl, selectedId, { includeAll = false } = {}) {
   if (!selectEl) return;
   if (!accountStore.accounts.length) {
     selectEl.innerHTML = `<option value="">请先添加账号</option>`;
     return;
   }
   const defaultId = getDefaultAccountId();
-  const value = selectedId || defaultId || "";
-  selectEl.innerHTML = accountStore.accounts
-    .map(
-      (a) =>
-        `<option value="${a.id}" ${a.id === value ? "selected" : ""}>${escapeHtml(a.name)}${a.isDefault ? "（默认）" : ""}</option>`
-    )
-    .join("");
+  const allowAll = includeAll && accountStore.accounts.length > 1;
+  let value = selectedId;
+  if (value == null) value = allowAll ? "" : defaultId || accountStore.accounts[0].id;
+  if (!allowAll && !value) value = defaultId || accountStore.accounts[0].id;
+
+  const options = [];
+  if (allowAll) {
+    options.push(`<option value="" ${value === "" ? "selected" : ""}>全部账号</option>`);
+  }
+  for (const a of accountStore.accounts) {
+    options.push(
+      `<option value="${a.id}" ${a.id === value ? "selected" : ""}>${escapeHtml(a.name)}${a.isDefault ? "（默认）" : ""}</option>`,
+    );
+  }
+  selectEl.innerHTML = options.join("");
 }
 
 function renderAccountSelects() {
@@ -958,17 +979,21 @@ function renderAccountSelects() {
     renderAccountSelectOptions($("#aiAccountSelect"), getDefaultAccountId());
   }
   if ($("#historyAccountSelect")) {
+    const raw = selectedHistoryAccountId ?? $("#historyAccountSelect").value;
     const historyValue =
-      selectedHistoryAccountId || $("#historyAccountSelect").value || getDefaultAccountId();
-    renderAccountSelectOptions($("#historyAccountSelect"), historyValue);
-    selectedHistoryAccountId = historyValue;
+      raw === "" ? "" : raw || getDefaultAccountId();
+    renderAccountSelectOptions($("#historyAccountSelect"), historyValue, { includeAll: true });
+    selectedHistoryAccountId = $("#historyAccountSelect").value;
     $("#historyAccountSelect").classList.toggle("hidden", accountStore.accounts.length <= 1);
   }
   renderMonitorAccountSelect();
   updateMonitorSectionHint();
   if ($("#publishedPostsAccountSelect")?.closest("dialog")?.open) {
-    const current = $("#publishedPostsAccountSelect").value || publishedPostsCache.accountId || getDefaultAccountId();
-    renderAccountSelectOptions($("#publishedPostsAccountSelect"), current);
+    const current =
+      $("#publishedPostsAccountSelect").value === ""
+        ? ""
+        : $("#publishedPostsAccountSelect").value || publishedPostsCache.accountId || getDefaultAccountId();
+    renderAccountSelectOptions($("#publishedPostsAccountSelect"), current, { includeAll: true });
   }
 }
 
@@ -1209,6 +1234,22 @@ function formatAccountDate(ts) {
   });
 }
 
+function normalizeAccountFilterDate(raw = "") {
+  const cleaned = String(raw || "")
+    .trim()
+    .replace(/[./年]/g, "-")
+    .replace(/月/g, "-")
+    .replace(/日/g, "");
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(cleaned)) {
+    const [y, m, d] = cleaned.split("-");
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  if (/^\d{8}$/.test(cleaned)) {
+    return `${cleaned.slice(0, 4)}-${cleaned.slice(4, 6)}-${cleaned.slice(6, 8)}`;
+  }
+  return "";
+}
+
 function getFilteredAccounts() {
   let list = [...accountStore.accounts].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const q = accountListState.query.trim().toLowerCase();
@@ -1220,15 +1261,21 @@ function getFilteredAccounts() {
         (acc.maskedKey || "").toLowerCase().includes(q)
     );
   }
-  if (accountListState.dateFrom) {
-    const from = new Date(accountListState.dateFrom);
-    from.setHours(0, 0, 0, 0);
-    list = list.filter((acc) => (acc.createdAt || 0) >= from.getTime());
+  const dateFrom = normalizeAccountFilterDate(accountListState.dateFrom);
+  const dateTo = normalizeAccountFilterDate(accountListState.dateTo);
+  if (dateFrom) {
+    const from = new Date(dateFrom);
+    if (!Number.isNaN(from.getTime())) {
+      from.setHours(0, 0, 0, 0);
+      list = list.filter((acc) => (acc.createdAt || 0) >= from.getTime());
+    }
   }
-  if (accountListState.dateTo) {
-    const to = new Date(accountListState.dateTo);
-    to.setHours(23, 59, 59, 999);
-    list = list.filter((acc) => (acc.createdAt || 0) <= to.getTime());
+  if (dateTo) {
+    const to = new Date(dateTo);
+    if (!Number.isNaN(to.getTime())) {
+      to.setHours(23, 59, 59, 999);
+      list = list.filter((acc) => (acc.createdAt || 0) <= to.getTime());
+    }
   }
   return list;
 }
@@ -1418,6 +1465,7 @@ async function init() {
   setInterval(refreshAiRuntimeStatus, 30000);
   setInterval(pollServerSystemLogs, 5000);
   pollServerSystemLogs();
+  startVpnSignalMonitor();
 }
 
 async function refreshAiRuntimeStatus() {
@@ -1426,9 +1474,180 @@ async function refreshAiRuntimeStatus() {
     const res = await fetch("/api/ai/config");
     const data = await res.json();
     renderAiStatus(data);
+    // 同步各账号「今日」额度到托管列表，避免发帖后表格仍显示旧值
+    if (Array.isArray(data.hostedAccounts) && aiHostedAccountsCache.length) {
+      const byId = new Map(data.hostedAccounts.map((item) => [item.accountId, item]));
+      let changed = false;
+      aiHostedAccountsCache = aiHostedAccountsCache.map((host) => {
+        const hit = byId.get(host.accountId);
+        if (!hit) return host;
+        const nextToday = hit.todayPublished ?? host.todayPublished ?? 0;
+        const nextMax = hit.maxPostsPerDay ?? host.maxPostsPerDay ?? data.maxPostsPerDay;
+        if (nextToday !== (host.todayPublished || 0) || nextMax !== (host.maxPostsPerDay || 10)) {
+          changed = true;
+        }
+        return {
+          ...host,
+          todayPublished: nextToday,
+          maxPostsPerDay: nextMax,
+        };
+      });
+      if (changed) renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
+    }
   } catch {
     // ignore background status refresh errors
   }
+}
+
+let vpnSignalTimer = null;
+let vpnSignalBusy = false;
+/** 最近一次成功测速结果，后台静默刷新失败时保留展示 */
+let vpnSignalLastOk = null;
+
+function vpnSignalBarsFromLatency(latencyMs) {
+  if (latencyMs == null || !Number.isFinite(latencyMs)) return 0;
+  if (latencyMs < 150) return 4;
+  if (latencyMs < 400) return 3;
+  if (latencyMs < 800) return 2;
+  return 1;
+}
+
+function vpnSignalLevelClass(bars, ok) {
+  if (!ok || bars <= 0) return "is-off";
+  if (bars >= 4) return "is-good";
+  if (bars >= 3) return "is-ok";
+  if (bars >= 2) return "is-mid";
+  return "is-bad";
+}
+
+function shortenVpnNodeName(name, maxLen = 12) {
+  const chars = Array.from(String(name || "").trim());
+  if (!chars.length) return "";
+  if (chars.length <= maxLen) return chars.join("");
+  return `${chars.slice(0, Math.max(1, maxLen - 1)).join("")}…`;
+}
+
+function renderVpnSignalWidget({
+  ok,
+  latencyMs,
+  hasProxy,
+  proxyLabel,
+  error,
+  loading,
+  source,
+  nodeName,
+  kindLabel,
+} = {}) {
+  const widget = $("#vpnSignalWidget");
+  const textEl = $("#vpnSignalText");
+  const kindEl = $("#vpnSignalKind");
+  const barsEl = $("#vpnSignalBars");
+  if (!widget || !textEl || !barsEl) return;
+
+  widget.classList.remove("is-good", "is-ok", "is-mid", "is-bad", "is-off", "is-loading");
+  if (loading) {
+    widget.classList.add("is-loading");
+    textEl.textContent = "…";
+    if (kindEl) kindEl.textContent = "测速中";
+    barsEl.querySelectorAll("i").forEach((el) => el.classList.remove("is-on"));
+    return;
+  }
+
+  const bars = ok ? vpnSignalBarsFromLatency(latencyMs) : 0;
+  widget.classList.add(vpnSignalLevelClass(bars, ok));
+  barsEl.querySelectorAll("i").forEach((el) => {
+    const n = Number(el.dataset.bar) || 0;
+    el.classList.toggle("is-on", n <= bars && bars > 0);
+  });
+
+  if (ok && latencyMs != null) {
+    const fromClash = source === "clash";
+    textEl.textContent = `${Math.round(latencyMs)}ms`;
+    if (kindEl) {
+      if (fromClash && nodeName) {
+        kindEl.textContent = shortenVpnNodeName(nodeName, 10);
+      } else {
+        kindEl.textContent = kindLabel || (fromClash ? "节点测速" : "出网测速");
+      }
+    }
+    widget.title = fromClash
+      ? `正在检测：VPN 当前节点「${nodeName || "未知"}」延迟（与 Clash/Mihomo 节点列表同口径）。点击刷新`
+      : `正在检测：经全局代理的实际出网延迟（适用于 v2rayN / sing-box 等无节点接口的软件）。${proxyLabel ? proxyLabel + "。" : ""}点击刷新`;
+  } else {
+    textEl.textContent = hasProxy === false ? "—" : "离线";
+    if (kindEl) kindEl.textContent = hasProxy === false ? "未配置" : "测速失败";
+    widget.title = error
+      ? `本地 VPN 测速失败：${error}。点击重试`
+      : "本地 VPN 测速失败。点击重试";
+  }
+}
+
+async function refreshVpnSignal({ quiet = false } = {}) {
+  if (vpnSignalBusy) return;
+  const widget = $("#vpnSignalWidget");
+  if (!widget) return;
+  vpnSignalBusy = true;
+  if (!quiet) renderVpnSignalWidget({ loading: true });
+  try {
+    const res = await fetch("/api/config/proxy-latency");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && data.ok == null) {
+      throw new Error(data.error || `测速接口异常 (${res.status})`);
+    }
+    const payload = {
+      ok: Boolean(data.ok),
+      latencyMs: data.latencyMs,
+      hasProxy: data.hasProxy,
+      proxyLabel: data.proxyLabel,
+      error: data.error,
+      source: data.source,
+      nodeName: data.nodeName,
+      kindLabel: data.kindLabel,
+    };
+    if (payload.ok && payload.latencyMs != null) {
+      vpnSignalLastOk = payload;
+      renderVpnSignalWidget(payload);
+      return;
+    }
+    if (quiet && vpnSignalLastOk) {
+      renderVpnSignalWidget(vpnSignalLastOk);
+      widget.title = `${vpnSignalLastOk.source === "clash" ? `节点「${vpnSignalLastOk.nodeName || "未知"}」` : "出网"} ${Math.round(vpnSignalLastOk.latencyMs)}ms（刚才刷新未成功${payload.error ? "：" + payload.error : ""}）。点击重试`;
+      return;
+    }
+    renderVpnSignalWidget(payload);
+  } catch (err) {
+    // 后台刷新失败时保留上次成功结果，避免闪「离线」
+    if (quiet && vpnSignalLastOk) {
+      renderVpnSignalWidget({
+        ...vpnSignalLastOk,
+        error: err?.message || "测速失败",
+      });
+      widget.title = `${vpnSignalLastOk.source === "clash" ? `节点「${vpnSignalLastOk.nodeName || "未知"}」` : "出网"} ${Math.round(vpnSignalLastOk.latencyMs)}ms（刚才刷新失败：${err?.message || "网络错误"}）。点击重试`;
+    } else {
+      renderVpnSignalWidget({
+        ok: false,
+        hasProxy: true,
+        error: err?.message || "测速失败",
+      });
+    }
+  } finally {
+    vpnSignalBusy = false;
+  }
+}
+
+function startVpnSignalMonitor() {
+  const widget = $("#vpnSignalWidget");
+  if (!widget) return;
+  if (widget.dataset.vpnBound === "1") return;
+  widget.dataset.vpnBound = "1";
+  widget.addEventListener("click", () => refreshVpnSignal({ quiet: false }));
+  // 只测设置页「全局代理」（本机 VPN/梯子），不测账号住宅 SOCKS
+  setTimeout(() => refreshVpnSignal({ quiet: false }), 2500);
+  if (vpnSignalTimer) clearInterval(vpnSignalTimer);
+  vpnSignalTimer = setInterval(() => {
+    if (document.hidden) return;
+    refreshVpnSignal({ quiet: true });
+  }, 30000);
 }
 
 async function loadConfig() {
@@ -1569,7 +1788,6 @@ function bindEvents() {
 
   $("#btnHomeManageAccount")?.addEventListener("click", () => switchView("accounts"));
   $("#btnHomeViewAllPublished")?.addEventListener("click", () => switchView("published"));
-  $("#btnHomeRefreshStats")?.addEventListener("click", () => refreshAllStats());
 
   $("#btnTestDefaultApi")?.addEventListener("click", testDefaultApi);
   $("#btnGoAccounts")?.addEventListener("click", () => switchView("accounts"));
@@ -1579,7 +1797,6 @@ function bindEvents() {
   $("#btnAddToken")?.addEventListener("click", () => openTokenModal(null));
   $("#btnRefreshTokenQuotes")?.addEventListener("click", () => refreshTokenQuotes(true));
   $("#btnSyncBinanceTokens")?.addEventListener("click", syncBinanceTokensFromUi);
-  $("#btnSaveTokenRefresh")?.addEventListener("click", saveTokenRefreshSettings);
   $("#tokenSearchInput")?.addEventListener("input", (e) => {
     tokenRegistryState.query = e.target.value || "";
     tokenRegistryState.page = 1;
@@ -1614,14 +1831,29 @@ function bindEvents() {
     renderAccountList();
   });
   $("#accountDateFrom")?.addEventListener("change", (e) => {
-    accountListState.dateFrom = e.target.value;
+    accountListState.dateFrom = e.target.value || "";
     accountListState.page = 1;
     renderAccountList();
   });
   $("#accountDateTo")?.addEventListener("change", (e) => {
-    accountListState.dateTo = e.target.value;
+    accountListState.dateTo = e.target.value || "";
     accountListState.page = 1;
     renderAccountList();
+  });
+  // 点整块区域也能弹出日历，少点一次小图标
+  $("#accountDateFrom")?.addEventListener("click", (e) => {
+    try {
+      e.target.showPicker?.();
+    } catch {
+      // 部分环境不支持 showPicker
+    }
+  });
+  $("#accountDateTo")?.addEventListener("click", (e) => {
+    try {
+      e.target.showPicker?.();
+    } catch {
+      // ignore
+    }
   });
   $("#btnAccountClearFilters")?.addEventListener("click", resetAccountListFilters);
   $("#btnSaveProxy").addEventListener("click", saveProxy);
@@ -1669,11 +1901,13 @@ function bindEvents() {
   $("#btnHostSelectAll")?.addEventListener("click", selectAllHostedAccounts);
   $("#btnHostSelectPage")?.addEventListener("click", selectHostedAccountsOnPage);
   $("#btnHostClearPage")?.addEventListener("click", clearLastHostedSelection);
+  $("#btnHostRefreshMetrics")?.addEventListener("click", () => refreshHostedAccountMetrics());
   $("#btnBatchRandomAllEveryPost")?.addEventListener("click", batchEnableRandomAllEveryPost);
   $("#btnBatchRandomTokens")?.addEventListener("click", () => batchAssignTokensRandom({ source: "preset" }));
   $("#btnBatchRandomHotTokens")?.addEventListener("click", () => batchAssignTokensRandom({ source: "hot" }));
   $("#btnBatchClearTokens")?.addEventListener("click", () => batchAssignTokensCustom([]));
   $("#btnBatchApplyCustomTokens")?.addEventListener("click", applyBatchCustomTokensFromInput);
+  $("#aiBatchTokenScope")?.addEventListener("change", () => syncBatchTokenSchemeUIFromTargets());
   $("#aiBatchCustomTokensInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -1721,7 +1955,6 @@ function bindEvents() {
   $("#btnSelectDrafts").addEventListener("click", selectDraftsOnly);
   $("#btnSelectNone").addEventListener("click", selectNone);
   $("#btnApplyBulkAccount")?.addEventListener("click", applyBulkAccountToSelected);
-  $("#btnRefreshAllStats").addEventListener("click", () => refreshAllStats());
   $("#monitorAccountSelect")?.addEventListener("change", (e) => {
     selectedMonitorAccountId = e.target.value;
     const settings = loadMonitorSettings();
@@ -1884,12 +2117,14 @@ function renderPublishedPostsList(posts, emptyText = "暂无已发布帖子") {
     return;
   }
 
+  const showAccount = posts.some((p) => p.accountName || p.accountId);
   list.innerHTML = posts
     .map(
       (post) => `
     <div class="published-post-item">
       <div class="post-text">${escapeHtml(postPreview(post.text, 180))}</div>
       <div class="published-post-meta">
+        ${showAccount && (post.accountName || post.accountId) ? `<span class="post-account-badge">${escapeHtml(post.accountName || getAccountName(post.accountId))}</span>` : ""}
         ${post.title ? `<span>标题: ${escapeHtml(post.title)}</span>` : ""}
         <span>${formatRemotePostTime(post.publishedAt)}</span>
         <span>浏览 ${post.viewCount ?? "-"}</span>
@@ -1988,11 +2223,14 @@ async function syncAllLocalPublishedToCache() {
 }
 
 function showPublishedPostsEmptyState(accountId, { statusMessage = NO_HISTORY_DETECTED_MSG, listMessage = NO_HISTORY_DETECTED_MSG } = {}) {
-  publishedPostsCache = { accountId, posts: [] };
-  renderAccountSelectOptions($("#publishedPostsAccountSelect"), accountId);
+  publishedPostsCache = { accountId: accountId || "", posts: [] };
+  renderAccountSelectOptions($("#publishedPostsAccountSelect"), accountId === "" ? "" : accountId, {
+    includeAll: true,
+  });
   const picker = document.querySelector(".published-posts-account-picker");
   if (picker) picker.classList.toggle("hidden", accountStore.accounts.length <= 1);
-  $("#publishedPostsTitle").textContent = `${getAccountName(accountId)} · 广场历史帖子`;
+  const titleName = accountId ? getAccountName(accountId) : "全部账号";
+  $("#publishedPostsTitle").textContent = `${titleName} · 广场历史帖子`;
   $("#publishedPostsSubtitle").textContent = "";
   $("#publishedPostsStatus").textContent = statusMessage;
   $("#publishedPostsStatus").className = "message info";
@@ -2010,10 +2248,24 @@ function showAccountNeedsPublishHint(accountId) {
 }
 
 async function fetchHistoryForCurrentAccount() {
-  const accountId = $("#historyAccountSelect")?.value || getDefaultAccountId();
-  if (!accountId) return void appAlert({ title: "提示", message: "请先添加账号", variant: "info" });
-  const accountName = getAccountName(accountId);
-  if (!(await appConfirm({ title: "确认", message: `拉取「${accountName}」的广场历史帖子\n\n${HISTORY_FETCH_CONFIRM_MSG}` }))) return;
+  const accountId = $("#historyAccountSelect")?.value;
+  const isAll = accountId === "";
+  if (!isAll && !accountId) {
+    return void appAlert({ title: "提示", message: "请先添加账号", variant: "info" });
+  }
+  if (!accountStore.accounts.length) {
+    return void appAlert({ title: "提示", message: "请先添加账号", variant: "info" });
+  }
+
+  const label = isAll ? "全部账号" : getAccountName(accountId);
+  if (!(await appConfirm({ title: "确认", message: `拉取「${label}」的广场历史帖子\n\n${HISTORY_FETCH_CONFIRM_MSG}` }))) {
+    return;
+  }
+
+  if (isAll) {
+    await showPublishedPostsModalForAllAccounts();
+    return;
+  }
 
   if (!canFetchAccountHistory(accountId)) {
     showPublishedPostsEmptyState(accountId);
@@ -2026,6 +2278,11 @@ async function fetchHistoryForCurrentAccount() {
 
 async function reloadPublishedPostsForSelectedAccount() {
   const accountId = $("#publishedPostsAccountSelect")?.value;
+  const isAll = accountId === "";
+  if (isAll) {
+    await showPublishedPostsModalForAllAccounts();
+    return;
+  }
   if (!accountId) return;
   if (!canFetchAccountHistory(accountId)) {
     showPublishedPostsEmptyState(accountId);
@@ -2035,27 +2292,91 @@ async function reloadPublishedPostsForSelectedAccount() {
   await showPublishedPostsModal(accountId, { postRef });
 }
 
-async function discoverAccountFromPost(accountId, postRef) {
-  if (!accountId || !postRef) return null;
-  const before = accountStore.accounts.find((a) => a.id === accountId);
-  const hadIdentity = Boolean(before?.username || before?.hasSquareUid || before?.hasAnchorPost);
+async function fetchAccountHistoryPosts(accountId) {
+  const ref = findLocalPostRefForAccount(accountId);
+  let url = `/api/accounts/${encodeURIComponent(accountId)}/posts?limit=20`;
+  if (ref) url += `&postRef=${encodeURIComponent(ref)}`;
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || "加载失败");
+    err.code = data.code;
+    throw err;
+  }
+  const name = getAccountName(accountId);
+  const posts = (data.posts || []).map((p) => ({
+    ...p,
+    accountId,
+    accountName: name,
+  }));
+  return { ...data, posts, accountId, accountName: name };
+}
 
-  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/discover-from-post`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ postRef }),
-  });
-  const data = await res.json();
-  if (!res.ok) return null;
+async function showPublishedPostsModalForAllAccounts() {
+  publishedPostsCache = { accountId: "", posts: [] };
+  renderAccountSelectOptions($("#publishedPostsAccountSelect"), "", { includeAll: true });
+  const picker = document.querySelector(".published-posts-account-picker");
+  if (picker) picker.classList.toggle("hidden", accountStore.accounts.length <= 1);
+  $("#publishedPostsTitle").textContent = "全部账号 · 广场历史帖子";
+  $("#publishedPostsSubtitle").textContent = "正在依次从币安广场拉取...";
+  $("#publishedPostsStatus").textContent = "正在加载，请稍候...";
+  $("#publishedPostsStatus").className = "message info";
+  $("#publishedPostsList").innerHTML = "";
+  $("#btnImportPublishedPosts").disabled = true;
+  openAppModal("publishedPostsModal");
 
+  const merged = [];
+  const notes = [];
+  const accounts = accountStore.accounts || [];
+  for (let i = 0; i < accounts.length; i += 1) {
+    const acc = accounts[i];
+    $("#publishedPostsStatus").textContent = `正在拉取「${acc.name}」(${i + 1}/${accounts.length})...`;
+    if (!canFetchAccountHistory(acc.id)) {
+      notes.push(`「${acc.name}」暂无法拉取（需先发帖或配置用户名/Cookie）`);
+      continue;
+    }
+    try {
+      const data = await fetchAccountHistoryPosts(acc.id);
+      if (data.posts?.length) {
+        merged.push(...data.posts);
+        notes.push(`「${acc.name}」${data.posts.length} 条`);
+      } else {
+        notes.push(`「${acc.name}」0 条`);
+      }
+    } catch (err) {
+      const localFallback = localPublishedPostsForAccount(acc.id).map((p) => ({
+        ...p,
+        accountId: acc.id,
+        accountName: acc.name,
+      }));
+      if (localFallback.length) {
+        merged.push(...localFallback);
+        notes.push(`「${acc.name}」远程失败，本地 ${localFallback.length} 条`);
+      } else {
+        notes.push(`「${acc.name}」失败：${err.message || "未知错误"}`);
+      }
+    }
+  }
+
+  merged.sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
+  publishedPostsCache = { accountId: "", posts: merged };
   await loadAccounts();
-  return { ...data, firstDiscovery: !hadIdentity };
+
+  $("#publishedPostsSubtitle").textContent = `共 ${merged.length} 条 · ${accounts.length} 个账号`;
+  $("#publishedPostsStatus").textContent = notes.join("；") || "拉取完成";
+  $("#publishedPostsStatus").className = merged.length ? "message ok" : "message info";
+  renderPublishedPostsList(merged, merged.length ? "暂无已发布帖子" : "全部账号暂无已发布的广场帖子");
+  $("#btnImportPublishedPosts").disabled = merged.length === 0;
 }
 
 async function showPublishedPostsModal(accountId, { postRef } = {}) {
+  if (accountId === "" || accountId == null) {
+    await showPublishedPostsModalForAllAccounts();
+    return;
+  }
   publishedPostsCache = { accountId, posts: [] };
   const accountName = getAccountName(accountId);
-  renderAccountSelectOptions($("#publishedPostsAccountSelect"), accountId);
+  renderAccountSelectOptions($("#publishedPostsAccountSelect"), accountId, { includeAll: true });
   const picker = document.querySelector(".published-posts-account-picker");
   if (picker) picker.classList.toggle("hidden", accountStore.accounts.length <= 1);
   $("#publishedPostsTitle").textContent = `${accountName} · 广场历史帖子`;
@@ -2079,7 +2400,12 @@ async function showPublishedPostsModal(accountId, { postRef } = {}) {
       throw err;
     }
 
-    publishedPostsCache = { accountId, posts: data.posts || [] };
+    const posts = (data.posts || []).map((p) => ({
+      ...p,
+      accountId,
+      accountName,
+    }));
+    publishedPostsCache = { accountId, posts };
     await loadAccounts();
 
     const identity = [
@@ -2125,7 +2451,11 @@ async function showPublishedPostsModal(accountId, { postRef } = {}) {
     renderPublishedPostsList(publishedPostsCache.posts, listEmptyText);
     $("#btnImportPublishedPosts").disabled = publishedPostsCache.posts.length === 0;
   } catch (err) {
-    const localFallback = localPublishedPostsForAccount(accountId);
+    const localFallback = localPublishedPostsForAccount(accountId).map((p) => ({
+      ...p,
+      accountId,
+      accountName,
+    }));
     if (localFallback.length) {
       await syncPublishedPostsToServerCache(accountId, localFallback);
       publishedPostsCache = { accountId, posts: localFallback };
@@ -2147,13 +2477,12 @@ async function showPublishedPostsModal(accountId, { postRef } = {}) {
 }
 
 function importPublishedPostsToList() {
-  const { accountId, posts: remotePosts } = publishedPostsCache;
-  if (!accountId || !remotePosts.length) {
+  const { posts: remotePosts } = publishedPostsCache;
+  if (!remotePosts?.length) {
     showAppToast("没有可导入的帖子，请先拉取广场历史帖子", "info");
     return;
   }
 
-  const accountName = getAccountName(accountId);
   const existingIds = new Set(
     posts.map((p) => p.result?.id).filter(Boolean).map(String)
   );
@@ -2163,6 +2492,8 @@ function importPublishedPostsToList() {
     for (const rp of remotePosts) {
       if (!rp.id || existingIds.has(String(rp.id))) continue;
       existingIds.add(String(rp.id));
+      const accountId = rp.accountId || publishedPostsCache.accountId || getDefaultAccountId();
+      const accountName = rp.accountName || getAccountName(accountId);
       posts.push({
         id: generateId(),
         text: rp.text || "",
@@ -2214,6 +2545,23 @@ function importPublishedPostsToList() {
   }
 
   showAppToast(message, statusType);
+}
+
+async function discoverAccountFromPost(accountId, postRef) {
+  if (!accountId || !postRef) return null;
+  const before = accountStore.accounts.find((a) => a.id === accountId);
+  const hadIdentity = Boolean(before?.username || before?.hasSquareUid || before?.hasAnchorPost);
+
+  const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/discover-from-post`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ postRef }),
+  });
+  const data = await res.json();
+  if (!res.ok) return null;
+
+  await loadAccounts();
+  return { ...data, firstDiscovery: !hadIdentity };
 }
 
 async function saveAccountFromModal() {
@@ -3709,6 +4057,109 @@ function renderHostedSummary(hosted = []) {
   `;
 }
 
+/** 一键获取托管账号互动：默认经全局代理（公开读接口） */
+async function refreshHostedAccountMetrics() {
+  const btn = $("#btnHostRefreshMetrics");
+  const targets = getBatchTokenTargetAccounts();
+  const accountIds = targets.map((item) => item.accountId).filter(Boolean);
+  if (!accountIds.length) {
+    showAiMessage("请先勾选托管账号，或把批量范围改成「全部/本页」", "err");
+    return;
+  }
+
+  const prevText = btn?.textContent || "一键获取互动";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "获取中…";
+  }
+
+  const startedAt = Date.now();
+  const tick = setInterval(() => {
+    const sec = Math.floor((Date.now() - startedAt) / 1000);
+    showAiMessage(`正在拉取互动（经全局代理）…已等待 ${sec}s`, "info");
+  }, 1000);
+  showAiMessage("正在拉取互动（经全局代理，不占用账号 SOCKS）…", "info");
+
+  // 先把本地已发布帖子同步进缓存（限时，避免拖死）
+  try {
+    await Promise.race([
+      syncAllLocalPublishedToCache(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("sync-timeout")), 8000)),
+    ]);
+  } catch {
+    // ignore
+  }
+
+  const controller = new AbortController();
+  const watchdog = setTimeout(() => controller.abort(), 45000);
+
+  try {
+    const res = await fetch("/api/hosted/metrics/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        accountIds,
+        limitPerAccount: 5,
+        delayMs: 50,
+        postTimeoutMs: 4000,
+        deadlineMs: 35000,
+        useAccountProxy: false,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 404) {
+      throw new Error("互动接口未加载，请完全退出软件（托盘图标也要退出）后重新打开再试");
+    }
+    if (!res.ok) throw new Error(data.error || "获取互动失败");
+
+    const byId = new Map((data.accounts || []).map((item) => [item.accountId, item]));
+    aiHostedAccountsCache = aiHostedAccountsCache.map((host) => {
+      const hit = byId.get(host.accountId);
+      if (!hit?.metrics) return host;
+      return {
+        ...host,
+        articleCount: hit.metrics.articleCount ?? host.articleCount,
+        viewCount: hit.metrics.viewCount ?? host.viewCount,
+        likeCount: hit.metrics.likeCount ?? host.likeCount,
+        commentCount: hit.metrics.commentCount ?? host.commentCount,
+        shareCount: hit.metrics.shareCount ?? host.shareCount,
+        commission: hit.metrics.commission ?? host.commission,
+        lastPublishedAt: hit.metrics.lastPublishedAt ?? host.lastPublishedAt,
+      };
+    });
+    renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
+
+    const okList = (data.accounts || []).filter((item) => item.ok);
+    const failList = (data.accounts || []).filter((item) => !item.ok);
+    let msg = data.message || `已刷新 ${okList.length} 个账号`;
+    if (failList.length) {
+      const brief = failList
+        .slice(0, 3)
+        .map((item) => `「${item.accountName || getAccountName(item.accountId)}」${item.error || "失败"}`)
+        .join("；");
+      msg += `；${failList.length} 个未成功：${brief}${failList.length > 3 ? "…" : ""}`;
+    }
+    showAiMessage(msg, failList.length && !okList.length ? "err" : failList.length ? "info" : "ok");
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      showAiMessage(
+        "获取互动仍超时。请完全退出软件（含托盘）再打开；并确认「设置」里全局代理可用",
+        "err",
+      );
+    } else {
+      showAiMessage(err.message || "获取互动失败", "err");
+    }
+  } finally {
+    clearInterval(tick);
+    clearTimeout(watchdog);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevText;
+    }
+  }
+}
+
 function getHostedSearchQuery() {
   return ($("#aiHostedSearchInput")?.value || "").trim().toLowerCase();
 }
@@ -3872,6 +4323,72 @@ function getBatchTokenTargetAccounts() {
   return enabled;
 }
 
+/** 批量代币方案高亮：记录最近一次批量操作，并尽量跟所选账号同步 */
+let aiBatchTokenScheme = "";
+
+const BATCH_SCHEME_LABELS = {
+  random_all: "每次随机·全部代币",
+  fixed_preset: "固定随机 2 个",
+  fixed_hot: "固定随机热点",
+  auto: "自动轮换",
+  custom: "自定义固定代币",
+  fixed: "指定代币",
+  mixed: "所选账号方案不一致",
+};
+
+function setBatchTokenSchemeUI(scheme, { persist = true } = {}) {
+  const next = String(scheme || "").trim();
+  if (persist && next && next !== "mixed") aiBatchTokenScheme = next;
+
+  document.querySelectorAll(".ai-batch-scheme-btn").forEach((btn) => {
+    const active = Boolean(next) && next !== "mixed" && btn.dataset.batchScheme === next;
+    btn.classList.toggle("is-active", active);
+    btn.classList.toggle("btn-accent", active);
+    btn.classList.toggle("btn-secondary", !active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+
+  const status = $("#aiBatchSchemeStatus");
+  if (status) {
+    if (!next) {
+      status.textContent = "";
+      status.classList.remove("is-mixed");
+    } else if (next === "mixed") {
+      status.textContent = `当前：${BATCH_SCHEME_LABELS.mixed}`;
+      status.classList.add("is-mixed");
+    } else {
+      status.textContent = `当前：${BATCH_SCHEME_LABELS[next] || next}`;
+      status.classList.remove("is-mixed");
+    }
+  }
+}
+
+/** 根据当前作用范围内账号，推断批量栏应高亮的方案 */
+function detectBatchTokenSchemeFromTargets(targets = getBatchTokenTargetAccounts()) {
+  if (!targets.length) return "";
+  const modes = targets.map((item) => getHostTokenMode(item));
+  const unique = [...new Set(modes)];
+  if (unique.length !== 1) return "mixed";
+  const mode = unique[0];
+  if (mode === "random_all") return "random_all";
+  if (mode === "auto") return "auto";
+  // fixed：若刚批量点过固定/热点/自定义，保留该细分；否则笼统标 fixed
+  if (
+    aiBatchTokenScheme === "fixed_preset" ||
+    aiBatchTokenScheme === "fixed_hot" ||
+    aiBatchTokenScheme === "custom"
+  ) {
+    return aiBatchTokenScheme;
+  }
+  return "fixed";
+}
+
+function syncBatchTokenSchemeUIFromTargets() {
+  const scheme = detectBatchTokenSchemeFromTargets();
+  // mixed / 空 不覆盖用户最近点击的细分记忆
+  setBatchTokenSchemeUI(scheme, { persist: scheme === "random_all" || scheme === "auto" });
+}
+
 function parseBatchTokenInput(raw = "") {
   return [
     ...new Set(
@@ -3954,6 +4471,11 @@ function applyTokensToHostedAccounts(targets, tokenResolver, { successMessage, t
 
 function batchEnableRandomAllEveryPost() {
   const targets = getBatchTokenTargetAccounts();
+  if (!targets.length) {
+    showAiMessage("没有可操作的账号：请先勾选托管，或把范围改成「全部/本页」", "err");
+    return;
+  }
+  setBatchTokenSchemeUI("random_all");
   applyTokensToHostedAccounts(targets, () => [], {
     tokenMode: "random_all",
     successMessage: `已为 ${targets.length} 个账号开启「每次随机·全部代币」（每次发文从软件内代币列表重抽）`,
@@ -3963,13 +4485,18 @@ function batchEnableRandomAllEveryPost() {
 function batchAssignTokensCustom(tokens) {
   const targets = getBatchTokenTargetAccounts();
   const normalized = [...new Set((tokens || []).map(parseTokenSymbol).filter(Boolean))];
-  const count = applyTokensToHostedAccounts(targets, () => normalized, {
+  const scheme = normalized.length ? "custom" : "auto";
+  if (!targets.length) {
+    showAiMessage("没有可操作的账号：请先勾选托管，或把范围改成「全部/本页」", "err");
+    return 0;
+  }
+  setBatchTokenSchemeUI(scheme);
+  return applyTokensToHostedAccounts(targets, () => normalized, {
     tokenMode: normalized.length ? "fixed" : "auto",
     successMessage: normalized.length
       ? `已为 ${targets.length} 个账号写入 $${normalized.join(" $")}`
       : `已清空 ${targets.length} 个账号的目标代币（将自动轮换）`,
   });
-  return count;
 }
 
 function applyBatchCustomTokensFromInput() {
@@ -4011,6 +4538,7 @@ async function batchAssignTokensRandom({ source = "preset" } = {}) {
     ? [...aiUiOptions.availableTokens]
     : [...DEFAULT_AVAILABLE_TOKENS];
   let label = "主流币";
+  const scheme = source === "hot" ? "fixed_hot" : "fixed_preset";
 
   if (source === "hot") {
     try {
@@ -4027,6 +4555,7 @@ async function batchAssignTokensRandom({ source = "preset" } = {}) {
     }
   }
 
+  setBatchTokenSchemeUI(scheme);
   applyTokensToHostedAccounts(targets, (_item, usedKeys) => pickRandomTokenPair(pool, usedKeys), {
     tokenMode: "fixed",
     successMessage: `已为 ${targets.length} 个账号固定写入${label}（各 2 个；不会每次发文重抽）`,
@@ -4058,12 +4587,14 @@ function renderHostedAccountsList(data) {
   if (!accountStore.accounts.length && !hostedAll.length) {
     container.innerHTML = `<div class="account-empty">请先在「账号管理」中添加账号</div>`;
     renderHostedPagination(0);
+    syncBatchTokenSchemeUIFromTargets();
     return;
   }
 
   if (!hostedAll.length) {
     container.innerHTML = `<div class="account-empty">暂无账号，请先在「账号管理」中添加</div>`;
     renderHostedPagination(0);
+    syncBatchTokenSchemeUIFromTargets();
     return;
   }
 
@@ -4071,6 +4602,7 @@ function renderHostedAccountsList(data) {
   if (!filtered.length) {
     container.innerHTML = `<div class="account-empty">未找到匹配账号</div>`;
     renderHostedPagination(0);
+    syncBatchTokenSchemeUIFromTargets();
     return;
   }
 
@@ -4095,6 +4627,7 @@ function renderHostedAccountsList(data) {
             <th>AI</th>
             <th>观点</th>
             <th>文章数</th>
+            <th title="该账号今日已发 / 单账号每日上限">今日(单账号)</th>
             <th>浏览量</th>
             <th>点赞</th>
             <th>评论</th>
@@ -4135,6 +4668,7 @@ function renderHostedAccountsList(data) {
                   </select>
                 </td>
                 <td class="num">${formatMetric(host.articleCount)}</td>
+                <td class="num" title="该账号今日已发 / 单账号每日上限">${host.todayPublished || 0}/${host.maxPostsPerDay || 10}</td>
                 <td class="num">${formatMetric(host.viewCount)}</td>
                 <td class="num">${formatMetric(host.likeCount)}</td>
                 <td class="num">${formatMetric(host.commentCount)}</td>
@@ -4257,6 +4791,7 @@ function renderHostedAccountsList(data) {
       syncVisibleHostedRowsIntoCache();
       renderHostedSummary(aiHostedAccountsCache);
       scheduleHostSettingsAutosave();
+      syncBatchTokenSchemeUIFromTargets();
     });
   });
 
@@ -4327,6 +4862,8 @@ function renderHostedAccountsList(data) {
       renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
     });
   }
+
+  syncBatchTokenSchemeUIFromTargets();
 }
 
 function syncVisibleHostedRowsIntoCache() {
@@ -4387,6 +4924,7 @@ function setHostTokenMode(accountId, mode) {
   }
   syncVisibleHostedRowsIntoCache();
   scheduleHostSettingsAutosave();
+  syncBatchTokenSchemeUIFromTargets();
 }
 
 function collectHostedAccountFromCard(card) {
@@ -4802,25 +5340,35 @@ function updateAiHostingButtons(data) {
   const draftBtn = $("#btnAiGenerateDraft");
   const cancelBtn = $("#btnAiCancelHosting");
   const on = Boolean(data?.enabled);
+  const locked = aiRunning || on;
 
   if (cancelBtn) {
-    cancelBtn.classList.toggle("hidden", !on);
-    cancelBtn.disabled = false;
-    cancelBtn.title = on ? "关闭自动托管，后台将不再按计划发帖" : "";
+    cancelBtn.classList.toggle("hidden", !locked);
+    // 已点取消但仍在跑本轮时，按钮保持可见并提示正在停止
+    cancelBtn.disabled = aiRunning && !on;
+    cancelBtn.textContent = aiRunning && !on ? "正在停止…" : "取消托管";
+    cancelBtn.title = on
+      ? "关闭自动托管；若本轮仍在跑会尽快结束，结束后才能改设置"
+      : aiRunning
+        ? "正在结束本轮任务，结束后即可修改设置"
+        : "";
   }
+
+  syncAiHostingSettingsLock(locked);
 
   // 运行中只更新取消按钮显隐，不改主按钮文案（避免把「运行中...」冲掉或乱恢复）
   if (aiRunning) return;
 
-  if (draftBtn) draftBtn.disabled = false;
+  if (draftBtn) draftBtn.disabled = locked;
   if (!btn) return;
 
-  btn.disabled = false;
+  btn.disabled = locked && on;
   if (on) {
     btn.textContent = "立即发一条（可选）";
-    btn.title = "后台已自动托管，刷新或重启后仍会按计划发帖。此按钮仅用于立即额外发一条";
+    btn.title = "后台已自动托管。托管开启期间请先「取消托管」再改设置；此按钮可额外立即发一条";
     btn.classList.remove("btn-accent");
     btn.classList.add("btn-secondary");
+    btn.disabled = false; // 仍允许立即发一条
   } else {
     btn.textContent = "开启并立即托管";
     btn.title = "开启自动托管并立即发布一条，之后将按间隔自动发帖";
@@ -4828,6 +5376,22 @@ function updateAiHostingButtons(data) {
     btn.classList.add("btn-accent");
   }
   delete btn.dataset.prevText;
+}
+
+function syncAiHostingSettingsLock(locked = isAiHostingSettingsLocked()) {
+  const view = $("#view-ai-host");
+  if (view) view.classList.toggle("is-hosting-locked", Boolean(locked));
+  const tip = $("#aiHostingLockTip");
+  if (tip) {
+    tip.classList.toggle("hidden", !locked);
+    tip.textContent = locked
+      ? "托管进行中：设置已锁定。请先点击「取消托管」，结束后才能修改。"
+      : "";
+  }
+}
+
+function isAiHostingSettingsLocked() {
+  return Boolean(aiRunning || $("#aiEnabled")?.checked);
 }
 
 /** 强制回到「未点开启」的按钮态（含卡住「运行中...」时） */
@@ -4849,10 +5413,20 @@ function resetAiHostingRunUi(data = { enabled: false }) {
 }
 
 async function stopAiHosting() {
-  const saved = await saveAiConfig({ enabled: false }, { silent: true });
+  if (!$("#aiEnabled")?.checked && !aiRunning) {
+    showAiMessage("当前未在托管", "info");
+    return;
+  }
+  const saved = await saveAiConfig({ enabled: false }, { silent: true, allowWhileHosting: true });
+  // 本轮若仍在跑，保持锁定直到结束
+  if (aiRunning) {
+    updateAiHostingButtons({ enabled: false });
+    showAiMessage("已取消自动托管，正在结束本轮任务…结束后即可修改设置。", "ok");
+    return;
+  }
   resetAiHostingRunUi(saved || { enabled: false });
   if (saved) {
-    showAiMessage("已取消 AI 自动托管，后台将不再自动发帖。", "ok");
+    showAiMessage("已取消 AI 自动托管，现在可以修改设置。", "ok");
   } else {
     showAiMessage("已恢复为未开启托管状态", "ok");
   }
@@ -4868,12 +5442,19 @@ function renderAiStatus(data) {
     data.model ? `模型: ${data.model}` : "",
     data.hasApiKey ? `AI Key: ${data.maskedKey}` : "AI Key: 未配置",
     data.enabled ? "托管: 已开启" : "托管: 未开启",
-    `今日已发 ${data.todayPublished || 0}/${data.maxPostsPerDay || 10} 条`,
+    `单账号每日上限 ${data.maxPostsPerDay || 10} 条 · 今日合计已发 ${data.todayPublished || 0} 条`,
     `上次运行 ${formatTime(data.lastRunAt)}`,
   ];
   const enabledHosted = (data.hostedAccounts || []).filter((item) => item.enabled);
   if (enabledHosted.length) {
-    parts.push(`托管账号: ${enabledHosted.length} 个（${enabledHosted.map((item) => item.accountName).join("、")}）`);
+    const quotaBrief = enabledHosted
+      .slice(0, 5)
+      .map((item) => `${item.accountName} ${item.todayPublished || 0}/${data.maxPostsPerDay || 10}`)
+      .join("、");
+    parts.push(
+      `托管账号: ${enabledHosted.length} 个（${enabledHosted.map((item) => item.accountName).join("、")}）`,
+    );
+    parts.push(`各账号今日: ${quotaBrief}${enabledHosted.length > 5 ? "…" : ""}`);
   } else {
     parts.push("托管账号: 未启用");
   }
@@ -4883,7 +5464,12 @@ function renderAiStatus(data) {
   }
   if (data.lastError) parts.push(`最近错误: ${data.lastError}`);
   el.textContent = parts.filter(Boolean).join(" · ");
-  el.className = data.lastError ? "message err" : "message info";
+  // 有成功发布记录时，残留错误用警告色，避免整栏一直血红
+  const softWarn =
+    Boolean(data.lastError) &&
+    Boolean(data.lastSuccessAt) &&
+    Number(data.todayPublished || 0) > 0;
+  el.className = data.lastError ? (softWarn ? "message warn" : "message err") : "message info";
 
   if (hint) {
     if (data.enabled && data.hasApiKey) {
@@ -5181,6 +5767,12 @@ function collectAiConfigFromUI() {
 
 /** 仅保存「文案风格设置」页：参考风格列表（不影响托管开关与节奏） */
 async function saveAiSettingsOnly(overrides = {}, { silent = false } = {}) {
+  if (isAiHostingSettingsLocked()) {
+    if (!silent) {
+      showAiSettingsMessage("自动托管进行中，请先点击「取消托管」后再修改风格设置", "err");
+    }
+    return null;
+  }
   const payload = { styleReferences: aiStyleReferencesCache, ...overrides };
   if (!silent) showAiSettingsMessage("正在保存风格设置…", "info");
   try {
@@ -5204,8 +5796,15 @@ async function saveAiSettingsOnly(overrides = {}, { silent = false } = {}) {
   }
 }
 
-async function saveAiConfig(overrides = {}, { silent = false, skipUiRefresh = false } = {}) {
+async function saveAiConfig(overrides = {}, { silent = false, skipUiRefresh = false, allowWhileHosting = false } = {}) {
+  const disabling = overrides.enabled === false;
+  if (isAiHostingSettingsLocked() && !disabling && !allowWhileHosting) {
+    // 开启状态下仅允许「取消托管」(enabled:false)；其它保存一律拒绝
+    if (!silent) showAiMessage("自动托管进行中，请先点击「取消托管」后再修改设置", "err");
+    return null;
+  }
   const payload = { ...collectAiConfigFromUI(), ...overrides };
+  if (disabling) payload.enabled = false;
   if (payload.enabled && !payload.hostedAccounts?.some((item) => item.enabled)) {
     if (!silent) showAiMessage("请至少勾选一个托管账号", "err");
     return null;
@@ -5254,8 +5853,10 @@ async function saveAiConfig(overrides = {}, { silent = false, skipUiRefresh = fa
 
 let aiHostAutosaveTimer = null;
 function scheduleHostSettingsAutosave() {
+  if (isAiHostingSettingsLocked()) return;
   clearTimeout(aiHostAutosaveTimer);
   aiHostAutosaveTimer = setTimeout(() => {
+    if (isAiHostingSettingsLocked()) return;
     saveAiConfig({}, { silent: true, skipUiRefresh: true }).then((data) => {
       if (data && !aiRunning) showAiMessage("托管设置已自动保存", "ok");
     });
@@ -5362,16 +5963,27 @@ async function aiRun({ publish = false } = {}) {
     return;
   }
 
-  const savedConfig = await saveAiConfig(
-    publish ? { enabled: true, autoPublish: true } : {},
-    { silent: true },
-  );
-  if (!savedConfig) return;
+  let savedConfig = null;
+  if (isAiHostingSettingsLocked()) {
+    // 托管开启中不改写设置，避免与额度计数交错；直接按已保存配置跑
+    if (!publish) {
+      showAiMessage("自动托管进行中，请先点击「取消托管」后再生成草稿", "err");
+      return;
+    }
+    savedConfig = normalizeAiConfigResponse(current);
+  } else {
+    savedConfig = await saveAiConfig(
+      publish ? { enabled: true, autoPublish: true } : {},
+      { silent: true },
+    );
+    if (!savedConfig) return;
+  }
 
   const actionText = publish ? "生成并发布" : "生成草稿";
   const btn = publish ? $("#btnAiRunNow") : $("#btnAiGenerateDraft");
   const runToken = ++aiRunToken;
   aiRunning = true;
+  updateAiHostingButtons({ enabled: Boolean(savedConfig?.enabled || $("#aiEnabled")?.checked) });
   if (btn) {
     btn.disabled = true;
     btn.dataset.prevText = btn.textContent;
@@ -5383,6 +5995,7 @@ async function aiRun({ publish = false } = {}) {
       : "正在生成草稿…（进度会自动更新）",
     "info",
   );
+  refreshQuotesOnHostingEvent("start");
   const progressTimer = setInterval(async () => {
     if (runToken !== aiRunToken) return;
     try {
@@ -5452,6 +6065,7 @@ async function aiRun({ publish = false } = {}) {
     } else {
       showAiMessage(baseMsg, "ok");
     }
+    refreshQuotesOnHostingEvent("round_done");
     await refreshAiRuntimeStatus();
   } catch {
     if (runToken === aiRunToken) showAiMessage("无法连接本地服务", "err");
@@ -5634,7 +6248,7 @@ function renderStatsBlock(post) {
   if (post.publishState !== "published" || !getPostRef(post)) return "";
 
   if (post.statsLoading) {
-    return `<div class="post-stats loading">正在获取互动数据...</div>`;
+    return `<div class="post-stats loading">正在获取互动数据…（代理慢时最多约 15 秒）</div>`;
   }
 
   if (post.statsError) {
@@ -5696,16 +6310,21 @@ async function refreshPostStats(postId, { silent = false, checkAlert = true } = 
   post.statsError = null;
   renderPosts();
 
+  const controller = new AbortController();
+  const watchdog = setTimeout(() => controller.abort(), 15000);
+
   try {
     const res = await fetch("/api/post/stats", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         shareLink: ref,
         accountId: post.accountId || getDefaultAccountId(),
+        timeoutMs: 12000,
       }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "获取失败");
 
     const newStats = data.stats;
@@ -5718,11 +6337,17 @@ async function refreshPostStats(postId, { silent = false, checkAlert = true } = 
     }
     return true;
   } catch (err) {
-    post.statsError = formatStatsError(err.message);
+    const timedOut = err?.name === "AbortError";
+    post.statsError = formatStatsError(
+      timedOut ? "获取超时，请检查该账号代理是否可用后重试" : err.message,
+    );
     const reviewPending = isReviewPendingError(err.message);
-    if (!silent && !reviewPending) await appAlert({ title: "提示", message: err.message, variant: "info" });
+    if (!silent && !reviewPending && !timedOut) {
+      await appAlert({ title: "提示", message: err.message, variant: "info" });
+    }
     return false;
   } finally {
+    clearTimeout(watchdog);
     post.statsLoading = false;
     saveDrafts();
     renderPosts();
@@ -5804,13 +6429,32 @@ async function refreshAllStats({ silent = false } = {}) {
     return;
   }
 
-  $("#btnRefreshAllStats").disabled = true;
-  for (const post of published) {
-    await refreshPostStats(post.id, { silent: true, checkAlert: true });
-    await new Promise((r) => setTimeout(r, 400));
+  // 定时刷新 / 静默刷新时无按钮可禁用
+  const btn = $("#btnHomeRefreshStats");
+  if (btn) btn.disabled = true;
+  // 清理上次异常中断遗留的 loading 态
+  for (const post of posts) {
+    if (post.statsLoading) post.statsLoading = false;
   }
-  $("#btnRefreshAllStats").disabled = false;
-  if (!silent) renderAlerts();
+  renderPosts();
+
+  let okCount = 0;
+  for (const post of published) {
+    const ok = await refreshPostStats(post.id, { silent: true, checkAlert: true });
+    if (ok) okCount += 1;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (btn) btn.disabled = false;
+  if (!silent) {
+    renderAlerts();
+    if (okCount === 0) {
+      await appAlert({
+        title: "提示",
+        message: "未能刷新互动数据。请检查各账号代理是否可用，或点单帖「重试」。",
+        variant: "info",
+      });
+    }
+  }
 }
 
 function postPreview(text, max = 40) {
@@ -6054,7 +6698,7 @@ let tokenRegistryState = {
   quotes: new Map(),
   query: "",
   loading: false,
-  settings: { refreshIntervalSec: 60 },
+  settings: { refreshIntervalSec: 0 },
   refreshTimer: null,
   page: 1,
   seedCount: 20,
@@ -6201,30 +6845,19 @@ function stopTokenQuotesAutoRefresh() {
   }
 }
 
-function applyTokenRefreshIntervalToUi() {
-  const input = $("#tokenRefreshIntervalInput");
-  if (input) input.value = String(tokenRegistryState.settings?.refreshIntervalSec ?? 60);
-}
-
+/** 已改为托管触发刷新，不再按秒轮询 */
 function startTokenQuotesAutoRefresh() {
   stopTokenQuotesAutoRefresh();
-  if (activeView !== "tokens") return;
-  const sec = Number(tokenRegistryState.settings?.refreshIntervalSec);
-  if (!Number.isFinite(sec) || sec <= 0) return;
-  const ms = Math.max(15, sec) * 1000;
-  tokenRegistryState.refreshTimer = setInterval(() => {
-    if (activeView !== "tokens") {
-      stopTokenQuotesAutoRefresh();
-      return;
-    }
-    refreshTokenQuotes(false);
-  }, ms);
 }
 
 function describeTokenRefreshHint() {
-  const sec = Number(tokenRegistryState.settings?.refreshIntervalSec);
-  if (!Number.isFinite(sec) || sec <= 0) return "自动刷新已关闭";
-  return `每 ${sec} 秒自动从币安公开 API 刷新报价`;
+  return "启动托管时更新最新价，完整一轮后再刷新一次";
+}
+
+/** 托管启动 / 一轮结束时刷新代币列表报价（静默，不打断当前页） */
+function refreshQuotesOnHostingEvent(phase = "start") {
+  if (!tokenRegistryState.tokens?.length) return Promise.resolve();
+  return refreshTokenQuotes(false).catch(() => {});
 }
 
 async function loadTokenRegistry({ autoSyncIfSeed = true } = {}) {
@@ -6238,9 +6871,17 @@ async function loadTokenRegistry({ autoSyncIfSeed = true } = {}) {
     tokenRegistryState.tokens = data.tokens || [];
     tokenRegistryState.chainOptions = data.chainOptions || [];
     tokenRegistryState.sourceOptions = data.sourceOptions || [];
-    tokenRegistryState.settings = data.settings || { refreshIntervalSec: 60 };
+    tokenRegistryState.settings = data.settings || { refreshIntervalSec: 0 };
     tokenRegistryState.seedCount = Number(data.seedCount) || 20;
-    applyTokenRefreshIntervalToUi();
+    // 关闭历史「按秒自动刷新」，改为托管触发
+    if (Number(tokenRegistryState.settings.refreshIntervalSec) > 0) {
+      tokenRegistryState.settings.refreshIntervalSec = 0;
+      fetch("/api/token-registry/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshIntervalSec: 0 }),
+      }).catch(() => {});
+    }
     fillTokenSelectOptions();
     renderTokenRegistryTable();
     setTokenRegistryMessage(
@@ -6261,30 +6902,11 @@ async function loadTokenRegistry({ autoSyncIfSeed = true } = {}) {
     }
 
     await refreshTokenQuotes(false);
-    startTokenQuotesAutoRefresh();
+    stopTokenQuotesAutoRefresh();
   } catch (err) {
     setTokenRegistryMessage(err.message || "加载失败", "err");
   } finally {
     tokenRegistryState.loading = false;
-  }
-}
-
-async function saveTokenRefreshSettings() {
-  const sec = Number($("#tokenRefreshIntervalInput")?.value);
-  try {
-    const res = await fetch("/api/token-registry/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshIntervalSec: sec }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "保存失败");
-    tokenRegistryState.settings = data.settings || { refreshIntervalSec: sec };
-    applyTokenRefreshIntervalToUi();
-    startTokenQuotesAutoRefresh();
-    setTokenRegistryMessage(`刷新设置已保存。${describeTokenRefreshHint()}。`, "ok");
-  } catch (err) {
-    setTokenRegistryMessage(err.message || "保存失败", "err");
   }
 }
 
@@ -6306,8 +6928,7 @@ async function syncBinanceTokensFromUi({ silentConfirm = false } = {}) {
     const res = await fetch("/api/token-registry/sync", { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "同步失败");
-    if (data.settings) tokenRegistryState.settings = data.settings;
-    applyTokenRefreshIntervalToUi();
+    if (data.settings) tokenRegistryState.settings = { ...data.settings, refreshIntervalSec: 0 };
     setTokenRegistryMessage(
       `同步完成：新增 ${data.added || 0}，回填合约 ${data.contractFilled || 0}，更新合约 ${data.contractUpdated || 0}，共 ${data.total || 0}（现货 ${data.spotPairs || 0} / Alpha ${data.alphaOnly || 0} / U本位 ${data.futuresOnly || 0}）。正在刷新列表…`,
       "ok",

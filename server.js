@@ -38,7 +38,7 @@ import {
   describeAccountProxyNetworkHint,
 } from "./lib/accounts.js";
 import { normalizeProxyConfig, isBlankProxyPassword } from "./lib/proxy-config.js";
-import { probeProxy } from "./lib/proxy-probe.js";
+import { probeProxy, measureProxyLatency } from "./lib/proxy-probe.js";
 import { fetchPostStatsByRef } from "./lib/square-stats.js";
 import { fetchPostCommentsByRef, closeBrowserClient, testBrowserLaunch } from "./lib/square-browser.js";
 import { fetchAccountPublishedPosts, discoverIdentityFromPostRef } from "./lib/square-posts.js";
@@ -47,6 +47,7 @@ import {
   cachePublishedPost,
   mergeCachedPosts,
   syncCachedPosts,
+  getAccountPostMetrics,
 } from "./lib/post-cache.js";
 import {
   getAiSettingsPublic,
@@ -57,7 +58,7 @@ import {
 } from "./lib/ai-settings.js";
 import { listAiProvidersPublic } from "./lib/ai-providers.js";
 import { generateSquarePost, testAiApiKey } from "./lib/ai-generator.js";
-import { getAiSchedulerStatus, runAiHostedCycle, startAiScheduler } from "./lib/ai-scheduler.js";
+import { getAiSchedulerStatus, runAiHostedCycle, startAiScheduler, requestAiHostCancel, isAiHostRunActive } from "./lib/ai-scheduler.js";
 import { getAiRunProgress } from "./lib/ai-run-progress.js";
 import {
   buildCryptoContext,
@@ -287,6 +288,9 @@ const server = http.createServer(async (req, res) => {
         creatorCenterUrl: "https://www.binance.com/square/creator-center/home",
         dailyLimit: 100,
         browserPath: getBrowserPath() || null,
+        // 供桌面端识别：是否为本软件拉起的服务（避免误连外部占用 3456 的旧 node）
+        desktopOwned: process.env.BINANCE_SQUARE_DESKTOP === "1",
+        serverBootAt: Number(process.env.BINANCE_SQUARE_SERVER_BOOT_AT || 0) || null,
       });
       return;
     }
@@ -526,6 +530,40 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/config/proxy-latency" && req.method === "GET") {
+      const proxyUrl = getProxyUrl();
+      const publicCfg = getGlobalProxyConfigPublic();
+      let result;
+      try {
+        result = await Promise.race([
+          measureProxyLatency(proxyUrl, { timeoutMs: 5000 }),
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error("测速超时")), 9000);
+          }),
+        ]);
+      } catch (err) {
+        result = {
+          ok: false,
+          latencyMs: null,
+          error: err?.message || "测速失败",
+          source: "none",
+          nodeName: null,
+          kindLabel: "测速失败",
+        };
+      }
+      json(res, 200, {
+        ok: Boolean(result.ok),
+        latencyMs: result.latencyMs,
+        error: result.error || null,
+        hasProxy: Boolean(proxyUrl),
+        proxyLabel: publicCfg?.proxyLabel || publicCfg?.label || (proxyUrl ? "全局代理" : "直连"),
+        source: result.source || null,
+        nodeName: result.nodeName || null,
+        kindLabel: result.kindLabel || null,
+      });
+      return;
+    }
+
     if (pathname === "/api/config/network-test" && req.method === "POST") {
       const body = req.headers["content-length"] ? JSON.parse(await readBody(req)) : {};
       // 自定义代理：分层检测 + HTTP/Socks5 自动纠错；全局/直连仍走原逻辑
@@ -668,9 +706,29 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { error: "请提供 postId 或 shareLink" });
         return;
       }
-      const stats = await fetchPostStatsByRef(ref, {
-        proxyUrl: resolveAccountProxy(body.accountId),
-      });
+      const accountProxy = resolveAccountProxy(body.accountId);
+      const globalProxy = getProxyUrl();
+      const timeoutMs = Math.max(4000, Math.min(parseInt(body.timeoutMs, 10) || 12000, 30000));
+      let stats;
+      try {
+        stats = await fetchPostStatsByRef(ref, {
+          proxyUrl: accountProxy,
+          timeoutMs,
+          retries: false,
+        });
+      } catch (err) {
+        const msg = err?.message || "";
+        const canFallback =
+          Boolean(globalProxy) &&
+          globalProxy !== accountProxy &&
+          /超时|代理|连接|ECONN|ETIMEDOUT|socket|TLS/i.test(msg);
+        if (!canFallback) throw err;
+        stats = await fetchPostStatsByRef(ref, {
+          proxyUrl: globalProxy,
+          timeoutMs,
+          retries: false,
+        });
+      }
       json(res, 200, { ok: true, stats });
       return;
     }
@@ -716,6 +774,249 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // 托管列表一键拉取互动（公开读接口）：默认走全局代理，整轮硬截止，避免 SOCKS 卡死
+    if (pathname === "/api/hosted/metrics/refresh" && req.method === "POST") {
+      const body = JSON.parse(await readBody(req));
+      const limitPerAccount = Math.max(1, Math.min(parseInt(body.limitPerAccount, 10) || 5, 12));
+      const delayMs = Math.max(0, Math.min(parseInt(body.delayMs, 10) || 50, 800));
+      const postTimeoutMs = Math.max(2500, Math.min(parseInt(body.postTimeoutMs, 10) || 4000, 10000));
+      const deadlineMs = Math.max(10000, Math.min(parseInt(body.deadlineMs, 10) || 35000, 60000));
+      // 默认 false：互动用全局代理（本机梯子），避免坏 SOCKS 拖死；发帖仍走账号代理
+      const useAccountProxy = body.useAccountProxy === true;
+      const startedAt = Date.now();
+      const allAccounts = listAccountsPublic().accounts || [];
+      const hasExplicitIds = Array.isArray(body.accountIds);
+      let accountIds = hasExplicitIds
+        ? body.accountIds.map((id) => String(id || "").trim()).filter(Boolean)
+        : [];
+
+      if (!accountIds.length) {
+        if (hasExplicitIds) {
+          json(res, 400, { error: "没有可刷新的账号" });
+          return;
+        }
+        const settings = readAiSettings();
+        if (body.scope === "enabled") {
+          accountIds = (settings.hostedAccounts || [])
+            .filter((item) => item.enabled)
+            .map((item) => item.accountId)
+            .filter(Boolean);
+        } else {
+          accountIds = allAccounts.map((item) => item.id).filter(Boolean);
+        }
+      }
+
+      if (!accountIds.length) {
+        json(res, 400, { error: "没有可刷新的账号" });
+        return;
+      }
+
+      function remainingMs() {
+        return deadlineMs - (Date.now() - startedAt);
+      }
+
+      function skippedResult(accountId, error) {
+        const account = getAccount(accountId);
+        return {
+          accountId,
+          accountName: account?.name,
+          ok: false,
+          error,
+          metrics: getAccountPostMetrics(accountId),
+          refreshedPosts: 0,
+          failedPosts: 0,
+          usedProxy: Boolean(getProxyUrl() || resolveAccountProxy(accountId)),
+          usedFallback: false,
+        };
+      }
+
+      async function refreshOneAccount(accountId) {
+        const account = getAccount(accountId);
+        if (!account) {
+          return {
+            accountId,
+            ok: false,
+            error: "账号不存在",
+            metrics: getAccountPostMetrics(accountId),
+            refreshedPosts: 0,
+            failedPosts: 0,
+            usedProxy: false,
+            usedFallback: false,
+          };
+        }
+
+        if (remainingMs() < postTimeoutMs + 400) {
+          return skippedResult(accountId, "整轮超时，已跳过该账号");
+        }
+
+        const accountProxyUrl = resolveAccountProxy(accountId);
+        const globalProxyUrl = getProxyUrl();
+        let activeProxyUrl = useAccountProxy
+          ? accountProxyUrl || globalProxyUrl
+          : globalProxyUrl || accountProxyUrl;
+        let usedFallback = false;
+        const canFallbackToGlobal =
+          useAccountProxy &&
+          Boolean(globalProxyUrl) &&
+          globalProxyUrl !== activeProxyUrl;
+
+        const posts = getCachedPosts(accountId, { limit: limitPerAccount });
+        if (!posts.length) {
+          return {
+            accountId,
+            accountName: account.name,
+            ok: false,
+            error: "暂无已缓存帖子，请先发帖或在「已发布」里拉取历史后再获取互动",
+            metrics: getAccountPostMetrics(accountId),
+            refreshedPosts: 0,
+            failedPosts: 0,
+            usedProxy: Boolean(activeProxyUrl),
+            usedFallback: false,
+          };
+        }
+
+        if (!activeProxyUrl && !globalProxyUrl) {
+          // 无代理时仍尝试直连（部分环境可通）
+          activeProxyUrl = "";
+        }
+
+        let refreshedPosts = 0;
+        let failedPosts = 0;
+        let consecutiveFails = 0;
+        let lastError = "";
+        const updated = [];
+
+        async function fetchStatsOnce(ref, proxyUrl) {
+          return fetchPostStatsByRef(ref, {
+            proxyUrl,
+            timeoutMs: Math.min(postTimeoutMs, Math.max(1800, remainingMs() - 200)),
+            retries: false,
+          });
+        }
+
+        for (let i = 0; i < posts.length; i += 1) {
+          if (remainingMs() < Math.min(postTimeoutMs, 2000)) {
+            lastError = "整轮超时，已提前结束";
+            break;
+          }
+          const post = posts[i];
+          const ref = post.id || post.shareLink;
+          if (!ref) continue;
+          try {
+            let stats;
+            try {
+              stats = await fetchStatsOnce(ref, activeProxyUrl);
+            } catch (err) {
+              const msg = err?.message || "刷新失败";
+              const proxyDead = /超时|代理|连接|ECONN|ETIMEDOUT|socket|TLS/i.test(msg);
+              if (proxyDead && canFallbackToGlobal) {
+                activeProxyUrl = globalProxyUrl;
+                usedFallback = true;
+                consecutiveFails = 0;
+                stats = await fetchStatsOnce(ref, activeProxyUrl);
+              } else {
+                throw err;
+              }
+            }
+            updated.push({
+              ...post,
+              viewCount: stats.viewCount ?? post.viewCount,
+              likeCount: stats.likeCount ?? post.likeCount,
+              commentCount: stats.commentCount ?? post.commentCount,
+              shareCount: stats.shareCount ?? post.shareCount,
+            });
+            refreshedPosts += 1;
+            consecutiveFails = 0;
+          } catch (err) {
+            failedPosts += 1;
+            consecutiveFails += 1;
+            lastError = err?.message || "刷新失败";
+            updated.push(post);
+            if (
+              consecutiveFails >= 2 &&
+              /超时|代理|连接|ECONN|ETIMEDOUT|socket|TLS/i.test(lastError)
+            ) {
+              lastError = `网络/代理不可用（${lastError}），已跳过剩余帖子`;
+              break;
+            }
+          }
+          if (delayMs > 0 && i < posts.length - 1) {
+            await new Promise((r) => setTimeout(r, delayMs));
+          }
+        }
+
+        if (updated.length) mergeCachedPosts(accountId, updated);
+        return {
+          accountId,
+          accountName: account.name,
+          ok: refreshedPosts > 0,
+          error: refreshedPosts
+            ? usedFallback
+              ? "账号代理不可用，已改用全局代理刷新"
+              : null
+            : lastError || "帖子互动数据刷新失败（代理超时或网络异常）",
+          metrics: getAccountPostMetrics(accountId),
+          refreshedPosts,
+          failedPosts,
+          usedProxy: Boolean(activeProxyUrl),
+          usedFallback,
+          viaGlobalProxy: !useAccountProxy || usedFallback || activeProxyUrl === globalProxyUrl,
+        };
+      }
+
+      const accounts = new Array(accountIds.length);
+      const concurrency = Math.max(1, Math.min(3, accountIds.length));
+      let cursor = 0;
+
+      const workers = Promise.all(
+        Array.from({ length: concurrency }, async () => {
+          while (cursor < accountIds.length) {
+            const index = cursor++;
+            if (remainingMs() < 1200) {
+              accounts[index] = skippedResult(accountIds[index], "整轮超时，已跳过该账号");
+              continue;
+            }
+            try {
+              accounts[index] = await refreshOneAccount(accountIds[index]);
+            } catch (err) {
+              accounts[index] = skippedResult(
+                accountIds[index],
+                err?.message || "刷新异常",
+              );
+            }
+          }
+        }),
+      );
+
+      // 绝对硬截止：即便底层代理 Promise 未结束，也先返回已完成的结果
+      await Promise.race([
+        workers,
+        new Promise((resolve) => setTimeout(resolve, deadlineMs)),
+      ]);
+
+      for (let i = 0; i < accountIds.length; i += 1) {
+        if (!accounts[i]) {
+          accounts[i] = skippedResult(accountIds[i], "整轮超时，已跳过该账号");
+        }
+      }
+
+      const okCount = accounts.filter((item) => item?.ok).length;
+      const elapsedMs = Date.now() - startedAt;
+      const viaGlobal = !useAccountProxy;
+      json(res, 200, {
+        ok: okCount > 0,
+        message:
+          okCount > 0
+            ? `已为 ${okCount}/${accounts.length} 个账号刷新互动${viaGlobal ? "（经全局代理）" : ""}，耗时 ${Math.round(elapsedMs / 1000)}s`
+            : `未能刷新互动数据（${accounts.length} 个账号，耗时 ${Math.round(elapsedMs / 1000)}s）`,
+        elapsedMs,
+        deadlineMs,
+        useAccountProxy,
+        accounts,
+      });
+      return;
+    }
+
     if (pathname === "/api/validate-posts" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
       const errors = validatePosts(body.posts || []);
@@ -744,7 +1045,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === "/api/ai/config" && req.method === "GET") {
-      json(res, 200, getAiSettingsPublic());
+      const saved = getAiSettingsPublic();
+      json(res, 200, {
+        ...saved,
+        hostingLocked: Boolean(saved.enabled) || isAiHostRunActive(),
+        runActive: isAiHostRunActive(),
+      });
       return;
     }
 
@@ -755,8 +1061,24 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/ai/config" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
+      const current = readAiSettings();
+      const isDisabling = body?.enabled === false;
+      const hostingLocked = Boolean(current.enabled) || isAiHostRunActive();
+      if (hostingLocked && !isDisabling) {
+        json(res, 409, {
+          error: "自动托管进行中，请先点击「取消托管」后再修改设置",
+          hostingLocked: true,
+        });
+        return;
+      }
+      if (isDisabling) requestAiHostCancel();
       const saved = saveAiSettings(body);
-      json(res, 200, { ok: true, ...saved });
+      json(res, 200, {
+        ok: true,
+        ...saved,
+        hostingLocked: Boolean(saved.enabled) || isAiHostRunActive(),
+        runActive: isAiHostRunActive(),
+      });
       return;
     }
 
