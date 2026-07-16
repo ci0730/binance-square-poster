@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Web UI for batch publishing posts to Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -94,7 +94,7 @@
       }
     ],
     "releaseInfo": {
-      "releaseNotes": "修复部分BUG"
+      "releaseNotes": "修复 AI 写帖价格占位/串价、未选币误标用户指定，以及托管部分失败提示"
     }
   }
 }
