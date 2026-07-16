@@ -37,7 +37,10 @@ const APP_MODAL_IDS = [
   "legalModal",
   "aiProfileModal",
   "updateModal",
+  "confirmModal",
 ];
+
+let confirmModalResolver = null;
 
 const SKIPPED_UPDATE_VERSION_KEY = "binance-square-skipped-update-version";
 let desktopUpdateState = {
@@ -74,6 +77,131 @@ function bindAppModalDismiss() {
       if (e.target === el) el.close();
     });
   }
+  bindConfirmModal();
+}
+
+function bindConfirmModal() {
+  const modal = $("#confirmModal");
+  if (!modal || modal.dataset.confirmBound) return;
+  modal.dataset.confirmBound = "1";
+  $("#btnConfirmModalOk")?.addEventListener("click", () => finishAppConfirm(true));
+  $("#btnConfirmModalCancel")?.addEventListener("click", () => finishAppConfirm(false));
+  modal.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    finishAppConfirm(false);
+  });
+  modal.addEventListener("close", () => {
+    if (confirmModalResolver) finishAppConfirm(false);
+  });
+}
+
+function finishAppConfirm(result) {
+  const resolve = confirmModalResolver;
+  confirmModalResolver = null;
+  const modal = $("#confirmModal");
+  if (modal?.open) {
+    // 先清空 resolver，避免 close 事件再次 finish 造成重复回调
+    modal.close();
+  }
+  if (typeof resolve === "function") resolve(Boolean(result));
+}
+
+/**
+ * 软件内确认弹窗（替代系统 confirm）
+ * @returns {Promise<boolean>}
+ */
+function appConfirm({
+  title = "确认",
+  message = "",
+  html = "",
+  confirmText = "确定",
+  cancelText = "取消",
+  danger = false,
+  variant = "",
+} = {}) {
+  return new Promise((resolve) => {
+    const modal = $("#confirmModal");
+    const wrap = modal?.querySelector(".confirm-modal");
+    const titleEl = $("#confirmModalTitle");
+    const bodyEl = $("#confirmModalBody");
+    const okBtn = $("#btnConfirmModalOk");
+    const cancelBtn = $("#btnConfirmModalCancel");
+    if (!modal || !wrap || !titleEl || !bodyEl || !okBtn) {
+      resolve(window.confirm([title, message].filter(Boolean).join("\n\n")));
+      return;
+    }
+
+    if (confirmModalResolver) finishAppConfirm(false);
+
+    const tone = variant || (danger ? "danger" : "warn");
+    wrap.classList.remove("is-danger", "is-ok", "is-info", "is-alert", "is-warn");
+    wrap.classList.add(
+      tone === "danger" ? "is-danger" : tone === "ok" ? "is-ok" : tone === "info" ? "is-info" : "is-warn",
+    );
+
+    titleEl.textContent = title;
+    if (html) bodyEl.innerHTML = html;
+    else bodyEl.textContent = message;
+    okBtn.textContent = confirmText;
+    if (cancelBtn) {
+      cancelBtn.textContent = cancelText;
+      cancelBtn.classList.remove("hidden");
+      cancelBtn.style.display = "";
+    }
+    okBtn.className = danger
+      ? "btn confirm-btn-ok is-danger"
+      : "btn btn-accent confirm-btn-ok";
+
+    confirmModalResolver = resolve;
+    openAppModal("confirmModal");
+    requestAnimationFrame(() => okBtn.focus());
+  });
+}
+
+/** 软件内提示弹窗（替代系统 alert） */
+function appAlert({
+  title = "提示",
+  message = "",
+  html = "",
+  confirmText = "知道了",
+  variant = "info",
+} = {}) {
+  return new Promise((resolve) => {
+    const modal = $("#confirmModal");
+    const wrap = modal?.querySelector(".confirm-modal");
+    const titleEl = $("#confirmModalTitle");
+    const bodyEl = $("#confirmModalBody");
+    const okBtn = $("#btnConfirmModalOk");
+    const cancelBtn = $("#btnConfirmModalCancel");
+    if (!modal || !wrap || !titleEl || !bodyEl || !okBtn) {
+      window.alert(message || title);
+      resolve();
+      return;
+    }
+
+    if (confirmModalResolver) finishAppConfirm(false);
+
+    wrap.classList.remove("is-danger", "is-ok", "is-info", "is-warn");
+    wrap.classList.add("is-alert");
+    wrap.classList.add(
+      variant === "ok" ? "is-ok" : variant === "err" || variant === "danger" ? "is-danger" : "is-info",
+    );
+    titleEl.textContent = title;
+    if (html) bodyEl.innerHTML = html;
+    else bodyEl.textContent = message;
+    okBtn.textContent = confirmText;
+    okBtn.className =
+      variant === "ok"
+        ? "btn confirm-btn-ok"
+        : variant === "err" || variant === "danger"
+          ? "btn confirm-btn-ok is-danger"
+          : "btn btn-accent confirm-btn-ok";
+    if (cancelBtn) cancelBtn.style.display = "none";
+
+    confirmModalResolver = () => resolve();
+    openAppModal("confirmModal");
+    requestAnimationFrame(() => okBtn.focus());
+  });
 }
 
 const DEFAULT_AVAILABLE_TOKENS = [
@@ -184,22 +312,44 @@ async function unbindCurrentDevice() {
     const res = await fetch("/api/device");
     device = await res.json();
   } catch {
-    alert("无法连接本地服务，请确认软件已启动。");
+    await appAlert({
+      title: "无法连接",
+      message: "无法连接本地服务，请确认软件已启动。",
+      variant: "err",
+    });
     return;
   }
 
-  const confirmed = confirm(
-    `确认解绑本设备吗？\n\n当前设备 ID：${device.maskedDeviceId || "未知"}\n机器标识：${device.maskedMachineId || "未知"}\n\n解绑后可在其他电脑安装使用。本机配置与缓存数据不会自动删除。`,
-  );
+  const confirmed = await appConfirm({
+    title: "确认解绑本设备？",
+    html: `
+      <div class="confirm-meta">
+        <div class="confirm-meta-row"><span class="k">设备 ID</span><span class="v">${escapeHtml(device.maskedDeviceId || "未知")}</span></div>
+        <div class="confirm-meta-row"><span class="k">机器标识</span><span class="v">${escapeHtml(device.maskedMachineId || "未知")}</span></div>
+      </div>
+      <p class="confirm-note">解绑后可在其他电脑安装使用；本机配置与缓存不会自动删除。</p>
+    `,
+    confirmText: "确认解绑",
+    cancelText: "取消",
+    danger: true,
+  });
   if (!confirmed) return;
 
   try {
     const res = await fetch("/api/device/unbind", { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "解绑失败");
-    alert(data.message || "设备已解绑");
+    await appAlert({
+      title: "解绑成功",
+      message: data.message || "设备已解绑",
+      variant: "ok",
+    });
   } catch (err) {
-    alert(err.message || "解绑失败，请稍后重试");
+    await appAlert({
+      title: "解绑失败",
+      message: err.message || "解绑失败，请稍后重试",
+      variant: "err",
+    });
   }
 }
 
@@ -646,9 +796,9 @@ function setPostAccount(postId, accountId) {
 
 function applyBulkAccountToSelected() {
   const accountId = $("#bulkAccountSelect")?.value;
-  if (!accountId) return alert("请选择发布账号");
+  if (!accountId) return void appAlert({ title: "提示", message: "请选择发布账号", variant: "info" });
   const selected = getSelectedPosts().filter((p) => p.publishState === "draft" || p.publishState === "failed");
-  if (!selected.length) return alert("请先勾选要设置账号的草稿或失败帖子");
+  if (!selected.length) return void appAlert({ title: "提示", message: "请先勾选要设置账号的草稿或失败帖子", variant: "info" });
   const accountName = getAccountName(accountId);
   selected.forEach((post) => {
     post.accountId = accountId;
@@ -1519,6 +1669,17 @@ function bindEvents() {
   $("#btnHostSelectAll")?.addEventListener("click", selectAllHostedAccounts);
   $("#btnHostSelectPage")?.addEventListener("click", selectHostedAccountsOnPage);
   $("#btnHostClearPage")?.addEventListener("click", clearLastHostedSelection);
+  $("#btnBatchRandomAllEveryPost")?.addEventListener("click", batchEnableRandomAllEveryPost);
+  $("#btnBatchRandomTokens")?.addEventListener("click", () => batchAssignTokensRandom({ source: "preset" }));
+  $("#btnBatchRandomHotTokens")?.addEventListener("click", () => batchAssignTokensRandom({ source: "hot" }));
+  $("#btnBatchClearTokens")?.addEventListener("click", () => batchAssignTokensCustom([]));
+  $("#btnBatchApplyCustomTokens")?.addEventListener("click", applyBatchCustomTokensFromInput);
+  $("#aiBatchCustomTokensInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyBatchCustomTokensFromInput();
+    }
+  });
   bindHostSettingsAutosave();
   $("#btnAiFillPost").addEventListener("click", aiFillPostModal);
   $("#btnThemeToggle")?.addEventListener("click", toggleTheme);
@@ -1850,9 +2011,9 @@ function showAccountNeedsPublishHint(accountId) {
 
 async function fetchHistoryForCurrentAccount() {
   const accountId = $("#historyAccountSelect")?.value || getDefaultAccountId();
-  if (!accountId) return alert("请先添加账号");
+  if (!accountId) return void appAlert({ title: "提示", message: "请先添加账号", variant: "info" });
   const accountName = getAccountName(accountId);
-  if (!confirm(`拉取「${accountName}」的广场历史帖子\n\n${HISTORY_FETCH_CONFIRM_MSG}`)) return;
+  if (!(await appConfirm({ title: "确认", message: `拉取「${accountName}」的广场历史帖子\n\n${HISTORY_FETCH_CONFIRM_MSG}` }))) return;
 
   if (!canFetchAccountHistory(accountId)) {
     showPublishedPostsEmptyState(accountId);
@@ -2120,7 +2281,7 @@ async function saveAccountFromModal() {
 
 async function deleteAccount(accountId) {
   const name = getAccountName(accountId);
-  if (!confirm(`确定删除账号「${name}」？`)) return;
+  if (!(await appConfirm({ title: "确认", message: `确定删除账号「${name}」？` }))) return;
   try {
     const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
     const data = await res.json();
@@ -2396,9 +2557,7 @@ async function saveDataDir() {
     return;
   }
   if (
-    !confirm(
-      `确定将数据目录改为：\n${dirPath}\n\n现有数据将复制到新目录（同名文件不覆盖），之后需重启应用才能完全生效。`,
-    )
+    !(await appConfirm({ title: "确认", message: `确定将数据目录改为：\n${dirPath}\n\n现有数据将复制到新目录（同名文件不覆盖），之后需重启应用才能完全生效。` }))
   ) {
     return;
   }
@@ -2423,7 +2582,7 @@ async function saveDataDir() {
 }
 
 async function resetDataDir() {
-  if (!confirm("确定恢复为默认数据目录？现有数据将复制回默认位置，之后需重启应用才能完全生效。")) {
+  if (!(await appConfirm({ title: "确认", message: "确定恢复为默认数据目录？现有数据将复制回默认位置，之后需重启应用才能完全生效。" }))) {
     return;
   }
   showDataDirMessage("正在恢复默认目录…", "info");
@@ -2819,6 +2978,7 @@ function buildHostedAccountsFallback(data = {}) {
     isDefault: acc.isDefault,
     enabled: acc.id === defaultId || Boolean(acc.isDefault),
     aiProfileId: null,
+    tokenMode: Array.isArray(data.selectedTokens) && data.selectedTokens.length ? "fixed" : "auto",
     selectedTokens: data.selectedTokens || [],
     customTokens: data.customTokens || [],
     marketSentiment: data.marketSentiment || "auto",
@@ -3352,7 +3512,7 @@ async function testAiProfileById(profileId) {
 async function deleteAiProfile(profileId) {
   const profile = aiProfilesCache.find((item) => item.id === profileId);
   if (!profile) return;
-  if (!confirm(`确定删除 AI「${profile.name}」？托管账号若绑定了此 AI 将回退为默认 AI。`)) return;
+  if (!(await appConfirm({ title: "确认", message: `确定删除 AI「${profile.name}」？托管账号若绑定了此 AI 将回退为默认 AI。` }))) return;
 
   const profiles = aiProfilesCache.filter((item) => item.id !== profileId);
   let defaultId = defaultAiProfileIdCache;
@@ -3698,6 +3858,194 @@ function clearLastHostedSelection() {
   clearHostedAccountsOnPage();
 }
 
+function getBatchTokenTargetAccounts() {
+  syncVisibleHostedRowsIntoCache();
+  const scope = $("#aiBatchTokenScope")?.value || "enabled";
+  const filtered = getFilteredHostedAccounts();
+  if (scope === "page") {
+    return getHostedPageSlice(filtered).pageRows;
+  }
+  if (scope === "all") {
+    return filtered.length ? filtered : [...aiHostedAccountsCache];
+  }
+  const enabled = (filtered.length ? filtered : aiHostedAccountsCache).filter((item) => item.enabled);
+  return enabled;
+}
+
+function parseBatchTokenInput(raw = "") {
+  return [
+    ...new Set(
+      String(raw || "")
+        .split(/[\s,，、;；|/]+/)
+        .map(parseTokenSymbol)
+        .filter((symbol) => symbol && symbol.length >= 2 && symbol.length <= 10),
+    ),
+  ].slice(0, 12);
+}
+
+function pickRandomTokenPair(pool = [], usedKeys = new Set()) {
+  const list = [...new Set(pool.map(parseTokenSymbol).filter(Boolean))];
+  if (!list.length) return [];
+  if (list.length === 1) return [list[0], list[0]];
+
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const a = list[Math.floor(Math.random() * list.length)];
+    let b = list[Math.floor(Math.random() * list.length)];
+    while (b === a) b = list[Math.floor(Math.random() * list.length)];
+    const key = [a, b].sort().join(",");
+    if (!usedKeys.has(key) || usedKeys.size >= Math.min(20, (list.length * (list.length - 1)) / 2)) {
+      usedKeys.add(key);
+      return [a, b];
+    }
+  }
+
+  const a = list[Math.floor(Math.random() * list.length)];
+  let b = list[Math.floor(Math.random() * list.length)];
+  while (b === a) b = list[Math.floor(Math.random() * list.length)];
+  return [a, b];
+}
+
+function applyTokensToHostedAccounts(targets, tokenResolver, { successMessage, tokenMode } = {}) {
+  if (!targets.length) {
+    showAiMessage("没有可操作的账号：请先勾选托管，或把范围改成「全部/本页」", "err");
+    return 0;
+  }
+
+  const preset = new Set(aiUiOptions.availableTokens || DEFAULT_AVAILABLE_TOKENS);
+  const usedKeys = new Set();
+  const idSet = new Set(targets.map((item) => item.accountId));
+  const mode =
+    tokenMode === "random_all" ? "random_all" : tokenMode === "auto" ? "auto" : "fixed";
+
+  aiHostedAccountsCache = aiHostedAccountsCache.map((item) => {
+    if (!idSet.has(item.accountId)) return item;
+    if (mode === "random_all") {
+      aiHostedCustomTokens[item.accountId] = [];
+      return {
+        ...item,
+        tokenMode: "random_all",
+        selectedTokens: [],
+        customTokens: [],
+      };
+    }
+    const tokens = tokenResolver(item, usedKeys)
+      .map(parseTokenSymbol)
+      .filter((symbol) => symbol && symbol.length >= 2)
+      .slice(0, 12);
+    if (!aiHostedCustomTokens[item.accountId]) aiHostedCustomTokens[item.accountId] = [];
+    for (const symbol of tokens) {
+      if (!preset.has(symbol) && !aiHostedCustomTokens[item.accountId].includes(symbol)) {
+        aiHostedCustomTokens[item.accountId].push(symbol);
+      }
+    }
+    return {
+      ...item,
+      tokenMode: tokens.length ? "fixed" : "auto",
+      selectedTokens: tokens,
+      customTokens: [...(aiHostedCustomTokens[item.accountId] || [])],
+    };
+  });
+
+  renderHostedAccountsList({ hostedAccounts: aiHostedAccountsCache });
+  scheduleHostSettingsAutosave();
+  if (successMessage) showAiMessage(successMessage, "ok");
+  return targets.length;
+}
+
+function batchEnableRandomAllEveryPost() {
+  const targets = getBatchTokenTargetAccounts();
+  applyTokensToHostedAccounts(targets, () => [], {
+    tokenMode: "random_all",
+    successMessage: `已为 ${targets.length} 个账号开启「每次随机·全部代币」（每次发文从软件内代币列表重抽）`,
+  });
+}
+
+function batchAssignTokensCustom(tokens) {
+  const targets = getBatchTokenTargetAccounts();
+  const normalized = [...new Set((tokens || []).map(parseTokenSymbol).filter(Boolean))];
+  const count = applyTokensToHostedAccounts(targets, () => normalized, {
+    tokenMode: normalized.length ? "fixed" : "auto",
+    successMessage: normalized.length
+      ? `已为 ${targets.length} 个账号写入 $${normalized.join(" $")}`
+      : `已清空 ${targets.length} 个账号的目标代币（将自动轮换）`,
+  });
+  return count;
+}
+
+function applyBatchCustomTokensFromInput() {
+  const tokens = parseBatchTokenInput($("#aiBatchCustomTokensInput")?.value || "");
+  if (!tokens.length) {
+    showAiMessage("请先填写自定义代币，如 BTC ETH，或点「清空（自动轮换）」", "err");
+    return;
+  }
+  batchAssignTokensCustom(tokens);
+}
+
+async function ensureHotTokenPool({ force = false } = {}) {
+  const cache = aiHotTokensCache || { tokens: [], fetchedAt: 0 };
+  const fresh =
+    force ||
+    !cache.tokens?.length ||
+    Date.now() - (cache.fetchedAt || 0) > 60_000;
+  if (!fresh) {
+    return (cache.tokens || []).map((item) => parseTokenSymbol(item.symbol)).filter(Boolean);
+  }
+  const res = await fetch(`/api/market/hot-tokens?limit=24${force ? "&force=1" : ""}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "热点代币加载失败");
+  aiHotTokensCache = {
+    tokens: data.tokens || [],
+    fetchedAt: data.fetchedAt || Date.now(),
+  };
+  return (aiHotTokensCache.tokens || []).map((item) => parseTokenSymbol(item.symbol)).filter(Boolean);
+}
+
+async function batchAssignTokensRandom({ source = "preset" } = {}) {
+  const targets = getBatchTokenTargetAccounts();
+  if (!targets.length) {
+    showAiMessage("没有可操作的账号：请先勾选托管，或把范围改成「全部/本页」", "err");
+    return;
+  }
+
+  let pool = aiUiOptions.availableTokens?.length
+    ? [...aiUiOptions.availableTokens]
+    : [...DEFAULT_AVAILABLE_TOKENS];
+  let label = "主流币";
+
+  if (source === "hot") {
+    try {
+      showAiMessage("正在拉取负费率热点…", "info");
+      pool = await ensureHotTokenPool({ force: !aiHotTokensCache?.tokens?.length });
+      label = "热点币";
+    } catch (err) {
+      showAiMessage(err.message || "热点代币加载失败", "err");
+      return;
+    }
+    if (pool.length < 2) {
+      showAiMessage("热点代币不足 2 个，请先点某个账号里的「刷新热点」后再试", "err");
+      return;
+    }
+  }
+
+  applyTokensToHostedAccounts(targets, (_item, usedKeys) => pickRandomTokenPair(pool, usedKeys), {
+    tokenMode: "fixed",
+    successMessage: `已为 ${targets.length} 个账号固定写入${label}（各 2 个；不会每次发文重抽）`,
+  });
+}
+
+function getHostTokenMode(host = {}) {
+  if (host.tokenMode === "random_all") return "random_all";
+  if (host.tokenMode === "auto") return "auto";
+  if (host.tokenMode === "fixed") return "fixed";
+  return Array.isArray(host.selectedTokens) && host.selectedTokens.length ? "fixed" : "auto";
+}
+
+function describeHostTokenMode(mode) {
+  if (mode === "random_all") return "每次随机·全部";
+  if (mode === "auto") return "自动轮换";
+  return "指定代币";
+}
+
 function renderHostedAccountsList(data) {
   const container = $("#aiHostedAccountsList");
   if (!container) return;
@@ -3793,8 +4141,8 @@ function renderHostedAccountsList(data) {
                 <td class="num muted" title="广场暂无统一佣金接口">${formatCommission(host.commission)}</td>
                 <td class="ai-host-status-cell">${host.enabled ? '<span class="badge badge-green">托管中</span>' : '<span class="muted">未启用</span>'}</td>
                 <td class="col-actions">
-                  <button type="button" class="btn btn-ghost btn-sm ai-host-toggle-config" data-account-id="${id}">
-                    ${expanded ? "收起代币" : "代币"}
+                  <button type="button" class="btn btn-ghost btn-sm ai-host-toggle-config" data-account-id="${id}" title="${escapeHtml(describeHostTokenMode(getHostTokenMode(host)))}">
+                    ${expanded ? "收起代币" : getHostTokenMode(host) === "random_all" ? "每次随机" : "代币"}
                   </button>
                 </td>
               </tr>
@@ -3803,8 +4151,21 @@ function renderHostedAccountsList(data) {
                   <div class="ai-hosted-account-body ${expanded ? "is-open" : ""}" id="aiHostBody-${id}">
                     <div class="ai-hosted-config-block">
                       <span class="ai-hosted-config-label">目标代币</span>
-                      <p class="hint">不选则根据新闻自动轮换主流币。点选下方芯片即加入该账号；也可从「热点代币」一键加入负资金费率合约。</p>
-                      <div class="token-picker ai-host-token-picker" data-account-id="${id}"></div>
+                      <div class="ai-host-token-mode-bar">
+                        <span class="badge ${getHostTokenMode(host) === "random_all" ? "badge-green" : "badge-gray"} ai-host-token-mode-badge" data-account-id="${id}">
+                          ${escapeHtml(describeHostTokenMode(getHostTokenMode(host)))}
+                        </span>
+                        <button type="button" class="btn btn-accent btn-sm ai-host-enable-random-all" data-account-id="${id}">每次随机·全部代币</button>
+                        <button type="button" class="btn btn-ghost btn-sm ai-host-clear-tokens" data-account-id="${id}">清空（自动轮换）</button>
+                      </div>
+                      <p class="hint ai-host-token-mode-hint" data-account-id="${id}">
+                        ${
+                          getHostTokenMode(host) === "random_all"
+                            ? "已开启：每次发文从软件内「代币地址列表」随机抽 2 个（不联网；排除稳定币/杠杆币）。点选手动代币会退出此模式。"
+                            : "不选则根据新闻自动轮换主流币。点选下方芯片即加入该账号；也可从「热点代币」一键加入负资金费率合约。"
+                        }
+                      </p>
+                      <div class="token-picker ai-host-token-picker ${getHostTokenMode(host) === "random_all" ? "is-dimmed" : ""}" data-account-id="${id}"></div>
                       <div class="token-custom-add">
                         <input type="text" class="ai-host-custom-token-input" data-account-id="${id}" placeholder="自定义代币，如 PEPE" maxlength="16" autocomplete="off" />
                         <button type="button" class="btn btn-secondary btn-sm ai-host-add-token" data-account-id="${id}">添加</button>
@@ -3841,15 +4202,41 @@ function renderHostedAccountsList(data) {
     renderTokenPickerIn(
       container.querySelector(`.ai-host-token-picker[data-account-id="${id}"]`),
       aiUiOptions.availableTokens,
-      host.selectedTokens || [],
+      getHostTokenMode(host) === "random_all" ? [] : host.selectedTokens || [],
       aiHostedCustomTokens[id],
       {
         onUpdate: () => {
+          setHostTokenMode(id, "fixed");
           syncVisibleHostedRowsIntoCache();
           scheduleHostSettingsAutosave();
         },
       },
     );
+  });
+
+  container.querySelectorAll(".ai-host-enable-random-all").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setHostTokenMode(btn.dataset.accountId, "random_all");
+      showAiMessage("已开启每次随机·全部代币，会自动保存", "ok");
+    });
+  });
+
+  container.querySelectorAll(".ai-host-clear-tokens").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const accountId = btn.dataset.accountId;
+      setHostTokenMode(accountId, "auto");
+      const picker = document.querySelector(`.ai-host-token-picker[data-account-id="${accountId}"]`);
+      if (picker) {
+        renderTokenPickerIn(picker, aiUiOptions.availableTokens, [], [], {
+          onUpdate: () => {
+            setHostTokenMode(accountId, "fixed");
+            syncVisibleHostedRowsIntoCache();
+            scheduleHostSettingsAutosave();
+          },
+        });
+      }
+      showAiMessage("已清空为目标自动轮换，会自动保存", "ok");
+    });
   });
 
   $("#aiHostSelectPageHeader")?.addEventListener("change", (e) => {
@@ -3957,6 +4344,51 @@ function syncVisibleHostedRowsIntoCache() {
   aiHostedAccountsCache = sortAccountsNewestFirst([...map.values()]);
 }
 
+function setHostTokenMode(accountId, mode) {
+  if (!accountId) return;
+  const nextMode = mode === "random_all" ? "random_all" : mode === "auto" ? "auto" : "fixed";
+  aiHostedAccountsCache = aiHostedAccountsCache.map((item) => {
+    if (item.accountId !== accountId) return item;
+    if (nextMode === "random_all") {
+      aiHostedCustomTokens[accountId] = [];
+      return { ...item, tokenMode: "random_all", selectedTokens: [], customTokens: [] };
+    }
+    if (nextMode === "auto") {
+      aiHostedCustomTokens[accountId] = [];
+      return { ...item, tokenMode: "auto", selectedTokens: [], customTokens: [] };
+    }
+    return { ...item, tokenMode: "fixed" };
+  });
+
+  const badge = document.querySelector(`.ai-host-token-mode-badge[data-account-id="${accountId}"]`);
+  if (badge) {
+    badge.textContent = describeHostTokenMode(nextMode);
+    badge.classList.toggle("badge-green", nextMode === "random_all");
+    badge.classList.toggle("badge-gray", nextMode !== "random_all");
+  }
+  const hint = document.querySelector(`.ai-host-token-mode-hint[data-account-id="${accountId}"]`);
+  if (hint) {
+    hint.textContent =
+      nextMode === "random_all"
+        ? "已开启：每次发文从软件内「代币地址列表」随机抽 2 个（不联网；排除稳定币/杠杆币）。点选手动代币会退出此模式。"
+        : "不选则根据新闻自动轮换主流币。点选下方芯片即加入该账号；也可从「热点代币」一键加入负资金费率合约。";
+  }
+  const picker = document.querySelector(`.ai-host-token-picker[data-account-id="${accountId}"]`);
+  picker?.classList.toggle("is-dimmed", nextMode === "random_all");
+  const toggleBtn = document.querySelector(`.ai-host-toggle-config[data-account-id="${accountId}"]`);
+  const bodyOpen = document.getElementById(`aiHostBody-${accountId}`)?.classList.contains("is-open");
+  if (toggleBtn) {
+    toggleBtn.textContent = bodyOpen
+      ? "收起代币"
+      : nextMode === "random_all"
+        ? "每次随机"
+        : "代币";
+    toggleBtn.title = describeHostTokenMode(nextMode);
+  }
+  syncVisibleHostedRowsIntoCache();
+  scheduleHostSettingsAutosave();
+}
+
 function collectHostedAccountFromCard(card) {
   const accountId = card.dataset.accountId;
   const configRow = document.querySelector(`tr.ai-hosted-config-row[data-account-id="${accountId}"]`);
@@ -3965,12 +4397,19 @@ function collectHostedAccountFromCard(card) {
   const profileSelect = card.querySelector(".ai-host-profile-select");
   const sentimentSelect = card.querySelector(".ai-host-sentiment-select");
   const styleId = styleSelect?.value || "casual";
+  const cached = aiHostedAccountsCache.find((item) => item.accountId === accountId);
+  const selectedTokens = collectSelectedTokensFromContainer(tokenPicker);
+  let tokenMode = getHostTokenMode(cached || {});
+  if (tokenMode !== "random_all") {
+    tokenMode = selectedTokens.length ? "fixed" : "auto";
+  }
   return {
     accountId,
     enabled: card.querySelector(".ai-host-enabled")?.checked || false,
     aiProfileId: profileSelect?.value || null,
-    selectedTokens: collectSelectedTokensFromContainer(tokenPicker),
-    customTokens: aiHostedCustomTokens[accountId] || [],
+    tokenMode,
+    selectedTokens: tokenMode === "random_all" ? [] : selectedTokens,
+    customTokens: tokenMode === "random_all" ? [] : aiHostedCustomTokens[accountId] || [],
     marketSentiment: sentimentSelect?.value || "auto",
     contentStyles: styleId ? [styleId] : ["casual"],
   };
@@ -3983,8 +4422,9 @@ function collectHostedAccountsFromUI() {
       accountId: item.accountId,
       enabled: Boolean(item.enabled),
       aiProfileId: item.aiProfileId || null,
-      selectedTokens: item.selectedTokens || [],
-      customTokens: item.customTokens || [],
+      tokenMode: getHostTokenMode(item),
+      selectedTokens: getHostTokenMode(item) === "random_all" ? [] : item.selectedTokens || [],
+      customTokens: getHostTokenMode(item) === "random_all" ? [] : item.customTokens || [],
       marketSentiment: item.marketSentiment || "auto",
       contentStyles: item.contentStyles?.length ? item.contentStyles : ["casual"],
     }));
@@ -4009,8 +4449,10 @@ function addHostedCustomToken(accountId) {
 
   const selected = collectSelectedTokensFromContainer(tokenPicker);
   if (!selected.includes(symbol)) selected.push(symbol);
+  setHostTokenMode(accountId, "fixed");
   renderTokenPickerIn(tokenPicker, aiUiOptions.availableTokens, selected, aiHostedCustomTokens[accountId], {
     onUpdate: () => {
+      setHostTokenMode(accountId, "fixed");
       syncVisibleHostedRowsIntoCache();
       scheduleHostSettingsAutosave();
     },
@@ -4111,6 +4553,7 @@ function ensureHotTokenInTargets(accountId, symbol, { select = true } = {}) {
   if (!preset.has(symbol) && !aiHostedCustomTokens[accountId].includes(symbol)) {
     aiHostedCustomTokens[accountId].push(symbol);
   }
+  setHostTokenMode(accountId, "fixed");
   renderTokenPickerIn(
     tokenPicker,
     aiUiOptions.availableTokens,
@@ -4118,6 +4561,7 @@ function ensureHotTokenInTargets(accountId, symbol, { select = true } = {}) {
     aiHostedCustomTokens[accountId],
     {
       onUpdate: () => {
+        setHostTokenMode(accountId, "fixed");
         syncVisibleHostedRowsIntoCache();
         scheduleHostSettingsAutosave();
       },
@@ -4688,7 +5132,7 @@ async function addAiStyleReferenceFromUi() {
   else setAiStyleRefMessage(`已添加「${name}」，但自动保存失败，请点「保存 AI 设置」`, "err");
 }
 
-function onAiStyleRefListClick(e) {
+async function onAiStyleRefListClick(e) {
   const previewBtn = e.target.closest('[data-action="preview-style-ref"]');
   if (previewBtn) {
     const id = previewBtn.closest(".ai-style-ref-item")?.dataset.id;
@@ -4700,7 +5144,7 @@ function onAiStyleRefListClick(e) {
   if (!btn) return;
   const id = btn.closest(".ai-style-ref-item")?.dataset.id;
   if (!id) return;
-  if (!confirm("确定删除该参考风格？")) return;
+  if (!(await appConfirm({ title: "确认", message: "确定删除该参考风格？" }))) return;
   aiStyleReferencesCache = aiStyleReferencesCache.filter((item) => item.id !== id);
   renderAiStyleReferencesList();
   refreshHostedStyleOptionsFromReferences();
@@ -5036,6 +5480,7 @@ async function aiFillPostModal() {
     const payload = {
       count: 1,
       contentStyles: hostConfig?.contentStyles,
+      tokenMode: hostConfig?.tokenMode || getHostTokenMode(hostConfig || {}),
       selectedTokens: hostConfig?.selectedTokens,
       marketSentiment: hostConfig?.marketSentiment,
     };
@@ -5055,18 +5500,18 @@ async function aiFillPostModal() {
     });
     const data = await res.json();
     if (!res.ok) {
-      alert(data.error || "AI 生成失败");
+      await appAlert({ title: "提示", message: data.error || "AI 生成失败", variant: "info" });
       return;
     }
     const text = data.posts?.[0]?.text;
     if (!text) {
-      alert("AI 未返回内容");
+      await appAlert({ title: "提示", message: "AI 未返回内容", variant: "info" });
       return;
     }
     $("#postText").value = text;
     $("#charCount").textContent = text.length;
   } catch {
-    alert("无法连接本地服务");
+    await appAlert({ title: "提示", message: "无法连接本地服务", variant: "info" });
   } finally {
     btn.disabled = false;
     btn.textContent = oldText;
@@ -5242,7 +5687,7 @@ async function refreshPostStats(postId, { silent = false, checkAlert = true } = 
   if (!post) return false;
   const ref = getPostRef(post);
   if (!ref) {
-    if (!silent) alert("该帖子没有可用的链接或 ID");
+    if (!silent) await appAlert({ title: "提示", message: "该帖子没有可用的链接或 ID", variant: "info" });
     return false;
   }
 
@@ -5275,7 +5720,7 @@ async function refreshPostStats(postId, { silent = false, checkAlert = true } = 
   } catch (err) {
     post.statsError = formatStatsError(err.message);
     const reviewPending = isReviewPendingError(err.message);
-    if (!silent && !reviewPending) alert(err.message);
+    if (!silent && !reviewPending) await appAlert({ title: "提示", message: err.message, variant: "info" });
     return false;
   } finally {
     post.statsLoading = false;
@@ -5348,11 +5793,13 @@ async function refreshAllStats({ silent = false } = {}) {
   if (!published.length) {
     if (!silent) {
       const accountId = getSelectedMonitorAccountId();
-      alert(
-        accountId
+      await appAlert({
+        title: "提示",
+        message: accountId
           ? `账号「${getAccountName(accountId)}」暂无已发布且可查询的帖子`
           : "没有已发布且可查询的帖子",
-      );
+        variant: "info",
+      });
     }
     return;
   }
@@ -5440,7 +5887,7 @@ function csvCell(value) {
 }
 
 function exportToExcel() {
-  if (!posts.length) return alert("没有可导出的数据");
+  if (!posts.length) return void appAlert({ title: "提示", message: "没有可导出的数据", variant: "info" });
 
   const headers = [
     "内容摘要",
@@ -5844,9 +6291,11 @@ async function saveTokenRefreshSettings() {
 async function syncBinanceTokensFromUi({ silentConfirm = false } = {}) {
   if (
     !silentConfirm &&
-    !confirm(
-      "从币安同步全部现货 + Alpha + U本位合约？\n会自动填写合约地址；只有你手动改过的合约不会被覆盖。\n大约需要 10–30 秒，请稍候。",
-    )
+    !(await appConfirm({
+      title: "同步币安代币列表",
+      message:
+        "从币安同步全部现货 + Alpha + U本位合约？\n会自动填写合约地址；只有你手动改过的合约不会被覆盖。\n大约需要 10–30 秒，请稍候。",
+    }))
   ) {
     return;
   }
@@ -5981,7 +6430,7 @@ async function onTokenRegistryClick(e) {
     return;
   }
   if (btn.dataset.action === "delete") {
-    if (!confirm(`确定删除 $${token.symbol}？`)) return;
+    if (!(await appConfirm({ title: "确认", message: `确定删除 $${token.symbol}？` }))) return;
     try {
       const res = await fetch(`/api/token-registry/${encodeURIComponent(id)}`, { method: "DELETE" });
       const data = await res.json();
@@ -6023,20 +6472,20 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
-function deletePost(id) {
+async function deletePost(id) {
   const post = posts.find((p) => p.id === id);
   if (!post) return;
   const label = post.publishState === "published" ? "已发布帖子" : "帖子";
-  if (!confirm(`确定删除这条${label}？`)) return;
+  if (!(await appConfirm({ title: "确认", message: `确定删除这条${label}？` }))) return;
   posts = posts.filter((p) => p.id !== id);
   saveDrafts();
   renderPosts();
 }
 
-function clearDrafts() {
+async function clearDrafts() {
   const draftPosts = posts.filter((p) => p.publishState === "draft" || p.publishState === "failed");
-  if (!draftPosts.length) return alert("没有可清空的草稿");
-  if (!confirm(`确定清空 ${draftPosts.length} 条草稿/失败帖子？已发布的帖子会保留。`)) return;
+  if (!draftPosts.length) return void appAlert({ title: "提示", message: "没有可清空的草稿", variant: "info" });
+  if (!(await appConfirm({ title: "确认", message: `确定清空 ${draftPosts.length} 条草稿/失败帖子？已发布的帖子会保留。` }))) return;
   posts = posts.filter(
     (p) => p.publishState === "published" || p.publishState === "publishing" || p.publishState === "uncertain",
   );
@@ -6044,10 +6493,10 @@ function clearDrafts() {
   renderPosts();
 }
 
-function deleteSelectedDrafts() {
+async function deleteSelectedDrafts() {
   const selected = getSelectedPosts().filter((p) => p.publishState === "draft" || p.publishState === "failed");
-  if (!selected.length) return alert("请先勾选要删除的草稿或失败帖子");
-  if (!confirm(`确定删除选中的 ${selected.length} 条帖子？此操作不可恢复。`)) return;
+  if (!selected.length) return void appAlert({ title: "提示", message: "请先勾选要删除的草稿或失败帖子", variant: "info" });
+  if (!(await appConfirm({ title: "确认", message: `确定删除选中的 ${selected.length} 条帖子？此操作不可恢复。` }))) return;
   const ids = new Set(selected.map((p) => p.id));
   posts = posts.filter((p) => !ids.has(p.id));
   saveDrafts();
@@ -6055,10 +6504,10 @@ function deleteSelectedDrafts() {
   showAppToast(`已删除 ${selected.length} 条帖子`, "ok");
 }
 
-function clearPublished() {
+async function clearPublished() {
   const publishedPosts = posts.filter((p) => p.publishState === "published");
-  if (!publishedPosts.length) return alert("没有已发布的帖子");
-  if (!confirm(`确定清空 ${publishedPosts.length} 条已发布记录？草稿会保留。`)) return;
+  if (!publishedPosts.length) return void appAlert({ title: "提示", message: "没有已发布的帖子", variant: "info" });
+  if (!(await appConfirm({ title: "确认", message: `确定清空 ${publishedPosts.length} 条已发布记录？草稿会保留。` }))) return;
   posts = posts.filter((p) => p.publishState !== "published");
   saveDrafts();
   renderPosts();
@@ -6136,7 +6585,7 @@ async function handleImageSelect(e) {
     });
     const data = await res.json();
     if (!res.ok) {
-      alert(data.error || "图片上传失败");
+      await appAlert({ title: "提示", message: data.error || "图片上传失败", variant: "info" });
       return;
     }
 
@@ -6144,9 +6593,9 @@ async function handleImageSelect(e) {
       currentImages.push(f.id);
     }
     renderImagePreview(data.files.map((f) => f.url));
-    alert(`图片上传成功（${data.files.length} 张）`);
+    await appAlert({ title: "提示", message: `图片上传成功（${data.files.length} 张）`, variant: "info" });
   } catch (err) {
-    alert(`图片上传失败: ${err.message}`);
+    await appAlert({ title: "提示", message: `图片上传失败: ${err.message}`, variant: "info" });
   }
   e.target.value = "";
 }
@@ -6165,8 +6614,8 @@ async function savePostFromModal() {
   const accountId = $("#postAccountSelect").value || getDefaultAccountId();
   const accountName = getAccountName(accountId);
 
-  if (!text) return alert("请输入帖子内容");
-  if (!accountId) return alert("请先添加并选择发布账号");
+  if (!text) return void appAlert({ title: "提示", message: "请输入帖子内容", variant: "info" });
+  if (!accountId) return void appAlert({ title: "提示", message: "请先添加并选择发布账号", variant: "info" });
 
   if (editId) {
     const post = posts.find((p) => p.id === editId);
@@ -6216,7 +6665,7 @@ async function confirmImport() {
     body: JSON.stringify({ text, format }),
   });
   const data = await res.json();
-  if (!res.ok) return alert(data.error);
+  if (!res.ok) return void appAlert({ title: "提示", message: data.error, variant: "info" });
 
   const defaultAccountId = getDefaultAccountId();
   const defaultAccountName = getAccountName(defaultAccountId);
@@ -6246,7 +6695,7 @@ async function confirmImport() {
 async function startBatchPublish() {
   const selected = getSelectedPosts();
   if (publishing || selected.length === 0) return;
-  if (!confirm(`确定发布选中的 ${selected.length} 条帖子？`)) return;
+  if (!(await appConfirm({ title: "确认", message: `确定发布选中的 ${selected.length} 条帖子？` }))) return;
 
   const publishQueue = selected.map((post) => ({
     post,

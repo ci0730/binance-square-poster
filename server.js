@@ -48,12 +48,26 @@ import {
   mergeCachedPosts,
   syncCachedPosts,
 } from "./lib/post-cache.js";
-import { getAiSettingsPublic, saveAiSettings, resolveAiCredentials, readAiSettings } from "./lib/ai-settings.js";
+import {
+  getAiSettingsPublic,
+  saveAiSettings,
+  resolveAiCredentials,
+  readAiSettings,
+  getRecentTokenPairs,
+} from "./lib/ai-settings.js";
 import { listAiProvidersPublic } from "./lib/ai-providers.js";
 import { generateSquarePost, testAiApiKey } from "./lib/ai-generator.js";
 import { getAiSchedulerStatus, runAiHostedCycle, startAiScheduler } from "./lib/ai-scheduler.js";
 import { getAiRunProgress } from "./lib/ai-run-progress.js";
-import { buildCryptoContext, fetchRegistryTokenQuotes, syncBinanceTokenRegistry, fetchHotNegativeFundingTokens } from "./lib/crypto-context.js";
+import {
+  buildCryptoContext,
+  fetchRegistryTokenQuotes,
+  syncBinanceTokenRegistry,
+  fetchHotNegativeFundingTokens,
+  pickRandomAllBinanceTokenPair,
+  TOKEN_MODE_RANDOM_ALL,
+  normalizeTokenMode,
+} from "./lib/crypto-context.js";
 import {
   listTokenRegistryPublic,
   upsertTokenRegistryEntry,
@@ -850,7 +864,12 @@ const server = http.createServer(async (req, res) => {
       const generated = [];
       const recentTexts = [];
       const recentContentStyles = [];
+      const tokenMode = normalizeTokenMode(body.tokenMode, body.selectedTokens);
       for (let i = 0; i < count; i++) {
+        const selectedTokens =
+          tokenMode === TOKEN_MODE_RANDOM_ALL
+            ? await pickRandomAllBinanceTokenPair({ recentPairs: getRecentTokenPairs() })
+            : body.selectedTokens;
         const draft = await generateSquarePost({
           apiKey: creds.apiKey,
           provider: creds.provider,
@@ -861,7 +880,7 @@ const server = http.createServer(async (req, res) => {
           contentStyles: body.contentStyles,
           contentStyle: body.contentStyle,
           recentContentStyles,
-          selectedTokens: body.selectedTokens,
+          selectedTokens,
           marketSentiment: body.marketSentiment,
           tokenIndex: i,
         });

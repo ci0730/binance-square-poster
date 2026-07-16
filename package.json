@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -95,7 +95,7 @@
       }
     ],
     "releaseInfo": {
-      "releaseNotes": "这款工具专为币安广场创作者设计，支持批量发帖、多账号管理，以及 AI 辅助写帖。\n\n我们重点打磨了四件事：\n\n**稳定可靠**\n对网络、代理相关逻辑做了排查与加固，减少异常中断和难懂的报错。\n\n**网络更省心**\n连接不稳时，软件会自动重试、自动处理，尽量不让你反复看到「网络错误」，把精力放在内容上。\n\n**界面更好用**\n布局按日常发帖流程优化，操作更顺、阅读更舒服，常用功能一眼能找到。\n\n**AI 写帖更完整**\nAI 生成内容更贴近广场风格：结构更清晰、信息更完整，减少半成品文案，改一改就能发。\n\n适合：要批量运营、多账号托管、又想少踩网络坑、少自己憋文案的创作者。"
+      "releaseNotes": "v1.0.7\n\n- AI 托管：批量设代币、每次随机（软件内代币列表，不联网）\n- AI 托管布局优化：节奏设置与操作按钮前置，选项改为点击变色芯片\n- 确认/提示弹窗美化为软件内深色风格，去掉系统白框\n- 隐藏主界面滚动条，保留滚轮滑动\n- 修复若干托管与弹窗交互问题"
     }
   }
 }

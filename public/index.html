@@ -461,6 +461,59 @@
             </div>
           </div>
 
+          <div class="ai-host-control-card">
+            <div class="form-row ai-host-schedule-row">
+              <label class="inline-label">
+                运行间隔
+                <input type="number" id="aiIntervalInput" value="60" min="5" max="1440" />
+                分钟
+              </label>
+              <label class="inline-label">
+                每次条数
+                <input type="number" id="aiPostsPerRunInput" value="1" min="1" max="5" />
+                条
+              </label>
+              <label class="inline-label">
+                每日上限
+                <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
+              </label>
+              <label class="inline-label" title="多账号同时写稿/发帖的路数，建议 2–5">
+                并行账号数
+                <input type="number" id="aiHostConcurrencyInput" value="3" min="1" max="8" />
+                路
+              </label>
+              <label class="inline-label">
+                条间间隔
+                <input type="number" id="aiPublishDelayMinInput" value="3" min="1" max="600" />
+                ～
+                <input type="number" id="aiPublishDelayMaxInput" value="8" min="1" max="600" />
+                秒
+              </label>
+            </div>
+            <div class="ai-host-option-row">
+              <label class="ai-host-chip-toggle">
+                <input type="checkbox" id="aiAutoPublish" checked />
+                <span>生成后自动发布</span>
+              </label>
+              <label class="ai-host-chip-toggle">
+                <input type="checkbox" id="aiAttachImages" checked />
+                <span>自动配图</span>
+              </label>
+              <label class="ai-host-chip-toggle">
+                <input type="checkbox" id="aiPreventDuplicate" checked />
+                <span>避免重复发帖</span>
+              </label>
+            </div>
+            <div class="form-row ai-host-action-row">
+              <button class="btn btn-secondary" id="btnAiGenerateDraft">立即生成草稿</button>
+              <button class="btn btn-accent" id="btnAiRunNow">开启并立即托管</button>
+              <button class="btn btn-secondary btn-danger hidden" id="btnAiCancelHosting">取消托管</button>
+            </div>
+            <p id="aiHostingHint" class="message info hidden"></p>
+            <p id="aiStatusText" class="message info">尚未配置 AI 托管</p>
+            <p id="aiMessage" class="message"></p>
+          </div>
+
           <div class="ai-hosted-section">
             <div class="ai-hosted-head">
               <h3>托管账号列表</h3>
@@ -472,61 +525,28 @@
               </div>
             </div>
             <div id="aiHostedSummary" class="ai-hosted-summary"></div>
+            <div class="ai-batch-token-bar" id="aiBatchTokenBar">
+              <div class="ai-batch-token-row">
+                <span class="ai-batch-token-label">批量设代币</span>
+                <select id="aiBatchTokenScope" class="account-select ai-batch-token-scope" title="作用范围">
+                  <option value="enabled">已勾选托管</option>
+                  <option value="all">全部账号</option>
+                  <option value="page">本页账号</option>
+                </select>
+                <button type="button" class="btn btn-accent btn-sm" id="btnBatchRandomAllEveryPost" title="每次发文从软件内代币地址列表随机抽 2 个">每次随机·全部代币</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnBatchRandomTokens" title="现在固定写 2 个主流币（不会每次重抽）">固定随机 2 个</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnBatchRandomHotTokens" title="现在固定写入热点币">固定随机热点</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btnBatchClearTokens" title="清空后按新闻自动轮换主流币">清空（自动轮换）</button>
+              </div>
+              <div class="ai-batch-token-row">
+                <input type="text" id="aiBatchCustomTokensInput" class="ai-batch-token-input" placeholder="自定义代币，如 BTC ETH PEPE（空格/逗号分隔）" maxlength="120" autocomplete="off" />
+                <button type="button" class="btn btn-secondary btn-sm" id="btnBatchApplyCustomTokens">应用到所选账号</button>
+              </div>
+              <p class="hint">「每次随机·全部代币」：每次发文从软件内「代币地址列表」重抽 2 个（不联网）。其余按钮是一次性写入固定列表。改完会自动保存。</p>
+            </div>
             <div id="aiHostedAccountsList" class="ai-hosted-accounts-list"></div>
             <div id="aiHostedPagination" class="ai-hosted-pagination"></div>
           </div>
-
-          <div class="form-row">
-            <label class="inline-label">
-              运行间隔
-              <input type="number" id="aiIntervalInput" value="60" min="5" max="1440" />
-              分钟
-            </label>
-            <label class="inline-label">
-              每次条数
-              <input type="number" id="aiPostsPerRunInput" value="1" min="1" max="5" />
-              条
-            </label>
-            <label class="inline-label">
-              每日上限
-              <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
-            </label>
-            <label class="inline-label" title="多账号同时写稿/发帖的路数，建议 2–5">
-              并行账号数
-              <input type="number" id="aiHostConcurrencyInput" value="3" min="1" max="8" />
-              路
-            </label>
-          </div>
-          <div class="form-row">
-            <label class="inline-label">
-              条间间隔
-              <input type="number" id="aiPublishDelayMinInput" value="3" min="1" max="600" />
-              ～
-              <input type="number" id="aiPublishDelayMaxInput" value="8" min="1" max="600" />
-              秒
-            </label>
-          </div>
-          <p class="hint">同一次托管连发多条时，每条之间在上述秒数范围内随机等待。多账号启用时按「并行账号数」同时跑，定时任务每轮也并行处理一批。</p>
-          <label class="field inline-toggle">
-            <input type="checkbox" id="aiAutoPublish" checked />
-            <span>生成后自动发布（关闭则仅保存为草稿）</span>
-          </label>
-          <label class="field inline-toggle">
-            <input type="checkbox" id="aiAttachImages" checked />
-            <span>自动附带配图（优先新闻图 + 代币走势图；都失败则纯文字发帖）</span>
-          </label>
-          <label class="field inline-toggle">
-            <input type="checkbox" id="aiPreventDuplicate" checked />
-            <span>避免重复发帖（与已发内容相似时自动重试或跳过）</span>
-          </label>
-          <div class="form-row">
-            <button class="btn btn-secondary" id="btnAiGenerateDraft">立即生成草稿</button>
-            <button class="btn btn-accent" id="btnAiRunNow">开启并立即托管</button>
-            <button class="btn btn-secondary btn-danger hidden" id="btnAiCancelHosting">取消托管</button>
-          </div>
-          <p id="aiHostingHint" class="message info hidden"></p>
-          <p id="aiStatusText" class="message info">尚未配置 AI 托管</p>
-          <p id="aiMessage" class="message"></p>
         </div>
       </section>
 
@@ -1035,6 +1055,27 @@
       <div id="legalModalBody" class="legal-modal-body"></div>
       <div class="modal-actions">
         <button type="button" class="btn btn-primary" id="btnCloseLegalModal">我知道了</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 统一确认 / 提示弹窗（替代系统 confirm / alert） -->
+  <dialog id="confirmModal" class="modal modal-confirm">
+    <div class="confirm-modal">
+      <div class="confirm-modal-glow" aria-hidden="true"></div>
+      <div class="confirm-modal-icon" id="confirmModalIcon" aria-hidden="true">
+        <svg class="confirm-icon-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path class="confirm-icon-warn" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <path class="confirm-icon-ok" d="M20 6L9 17l-5-5"/>
+          <circle class="confirm-icon-info" cx="12" cy="12" r="9"/>
+          <path class="confirm-icon-info" d="M12 8v4m0 4h.01"/>
+        </svg>
+      </div>
+      <h2 id="confirmModalTitle">确认</h2>
+      <div id="confirmModalBody" class="confirm-modal-body"></div>
+      <div class="modal-actions confirm-modal-actions">
+        <button type="button" class="btn btn-secondary confirm-btn-cancel" id="btnConfirmModalCancel">取消</button>
+        <button type="button" class="btn btn-accent confirm-btn-ok" id="btnConfirmModalOk">确定</button>
       </div>
     </div>
   </dialog>
