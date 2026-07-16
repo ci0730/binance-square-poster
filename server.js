@@ -156,8 +156,13 @@ async function handleBatchPublish(req, res, posts, intervalSeconds) {
   });
 
   const send = (event, data) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    if (typeof res.flush === "function") res.flush();
+    if (res.destroyed || res.writableEnded) return;
+    try {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (typeof res.flush === "function") res.flush();
+    } catch {
+      // 客户端关闭页面后，后台仍完成当前批次并写入本地发布缓存。
+    }
   };
 
   const results = [];
@@ -179,7 +184,13 @@ async function handleBatchPublish(req, res, posts, intervalSeconds) {
     try {
       apiKey = resolveAccountApiKey(post.accountId);
     } catch (err) {
-      const item = { index: i, ok: false, error: err.message, text: post.text?.slice(0, 80) };
+      const item = {
+        index: i,
+        ok: false,
+        uncertain: err?.code === "PUBLISH_CONFIRMATION_UNKNOWN",
+        error: err.message,
+        text: post.text?.slice(0, 80),
+      };
       results.push(item);
       send("result", item);
       continue;
@@ -220,8 +231,10 @@ async function handleBatchPublish(req, res, posts, intervalSeconds) {
   }
 
   const succeeded = results.filter((r) => r.ok).length;
-  send("done", { total: posts.length, succeeded, failed: results.length - succeeded, results });
-  res.end();
+  const uncertain = results.filter((r) => r.uncertain).length;
+  const failed = results.filter((r) => !r.ok && !r.uncertain).length;
+  send("done", { total: posts.length, succeeded, failed, uncertain, results });
+  if (!res.destroyed && !res.writableEnded) res.end();
 }
 
 const server = http.createServer(async (req, res) => {

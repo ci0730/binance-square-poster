@@ -2400,6 +2400,11 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   color: #6b8cff;
 }
 
+.state-uncertain {
+  background: rgba(240, 185, 11, 0.16);
+  color: #d69b00;
+}
+
 .error-text {
   color: var(--error);
 }
@@ -2414,6 +2419,10 @@ h1 { font-size: 1.35rem; font-weight: 600; }
 
 .post-card.status-failed {
   border-color: rgba(246, 70, 93, 0.35);
+}
+
+.post-card.status-uncertain {
+  border-color: rgba(240, 185, 11, 0.45);
 }
 
 /* Post cards */

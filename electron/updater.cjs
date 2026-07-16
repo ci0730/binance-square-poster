@@ -4,17 +4,23 @@ const fs = require("fs");
 const path = require("path");
 
 const CHECK_DELAY_MS = 4000;
-const DEFAULT_RELEASE_NOTES = "修复部分BUG";
+const DEFAULT_RELEASE_NOTES = "稳定性与使用体验改进";
 
 let mainWindowGetter = () => null;
 let pendingUpdateInfo = null;
 
 function sanitizeInfo(info = {}) {
+  const releaseNotes = Array.isArray(info.releaseNotes)
+    ? info.releaseNotes
+        .map((item) => (typeof item === "string" ? item : item?.note || ""))
+        .filter(Boolean)
+        .join("\n")
+    : String(info.releaseNotes || "").trim();
   return {
     version: info.version || "",
     releaseDate: info.releaseDate || "",
     releaseName: info.releaseName || "",
-    releaseNotes: DEFAULT_RELEASE_NOTES,
+    releaseNotes: releaseNotes || DEFAULT_RELEASE_NOTES,
   };
 }
 

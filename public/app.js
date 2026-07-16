@@ -208,19 +208,28 @@ function generateId() {
 }
 
 function normalizeStoredPost(p) {
-  const publishState =
+  let publishState =
     p.publishState ||
     (p.status === "success" ? "published" : p.status === "error" ? "failed" : p.status === "publishing" ? "publishing" : "draft");
+  const interruptedWhilePublishing = publishState === "publishing";
+  if (interruptedWhilePublishing) publishState = "uncertain";
 
   return {
     id: p.id || generateId(),
     text: p.text || "",
     title: p.title || "",
     imagePaths: Array.isArray(p.imagePaths) ? p.imagePaths : [],
-    selected: publishState === "published" ? Boolean(p.selected) : p.selected !== false,
+    selected:
+      publishState === "published" || publishState === "uncertain"
+        ? false
+        : p.selected !== false,
     publishState,
     result: p.result || null,
-    error: p.error || null,
+    error:
+      p.error ||
+      (interruptedWhilePublishing
+        ? "上次发布在确认结果前中断，请先拉取广场历史帖子核对，避免重复发布"
+        : null),
     publishedAt: p.publishedAt || null,
     createdAt: p.createdAt || Date.now(),
     accountId: p.accountId || null,
@@ -365,6 +374,8 @@ function getDraftPosts() {
     filtered = posts.filter((p) => p.publishState === "draft" || p.publishState === "publishing");
   } else if (currentFilter === "failed") {
     filtered = posts.filter((p) => p.publishState === "failed");
+  } else if (currentFilter === "uncertain") {
+    filtered = posts.filter((p) => p.publishState === "uncertain");
   } else {
     filtered = posts.filter((p) => p.publishState !== "published");
   }
@@ -446,7 +457,7 @@ function renderHomeDashboard() {
 
   const draftCount = countByState("draft") + countByState("publishing");
   const publishedCount = countByState("published");
-  const failedCount = countByState("failed");
+  const failedCount = countByState("failed") + countByState("uncertain");
   $("#homeDraftCount").textContent = String(draftCount);
   $("#homePublishedCount").textContent = String(publishedCount);
   $("#homeFailedCount").textContent = String(failedCount);
@@ -585,7 +596,9 @@ async function testDefaultApi() {
 }
 
 function getSelectedPosts() {
-  return posts.filter((p) => p.selected && p.publishState !== "publishing");
+  return posts.filter(
+    (p) => p.selected && (p.publishState === "draft" || p.publishState === "failed"),
+  );
 }
 
 function countByState(state) {
@@ -5078,12 +5091,29 @@ function updatePublishBtn() {
 
 function updateDraftStats() {
   const draftCount = countByState("draft") + countByState("failed");
+  const uncertainCount = countByState("uncertain");
   const publishedCount = countByState("published");
-  $("#draftStats").textContent = `${draftCount} 条待发布 · ${publishedCount} 条已发布`;
+  $("#draftStats").textContent = `${draftCount} 条待发布${uncertainCount ? ` · ${uncertainCount} 条待确认` : ""} · ${publishedCount} 条已发布`;
+}
+
+function updateDraftFilterCounts() {
+  const counts = {
+    draft: countByState("draft") + countByState("publishing"),
+    failed: countByState("failed"),
+    uncertain: countByState("uncertain"),
+    all: posts.filter((p) => p.publishState !== "published").length,
+  };
+  const labels = { draft: "草稿", failed: "失败", uncertain: "待确认", all: "全部待发" };
+  $$("#draftFilters .filter-tab").forEach((button) => {
+    const filter = button.dataset.filter;
+    button.textContent = `${labels[filter] || filter} ${counts[filter] || 0}`;
+  });
 }
 
 function updateSelectAllCheckbox() {
-  const visible = getFilteredPosts().filter((p) => p.publishState !== "publishing");
+  const visible = getFilteredPosts().filter(
+    (p) => p.publishState === "draft" || p.publishState === "failed",
+  );
   const allSelected = visible.length > 0 && visible.every((p) => p.selected);
   const someSelected = visible.some((p) => p.selected);
   const checkbox = $("#selectAllCheckbox");
@@ -5099,6 +5129,8 @@ function stateLabel(post) {
       return "发布失败";
     case "publishing":
       return "发布中";
+    case "uncertain":
+      return "待确认";
     default:
       return "草稿";
   }
@@ -5112,6 +5144,8 @@ function stateClass(post) {
       return "state-failed";
     case "publishing":
       return "state-publishing";
+    case "uncertain":
+      return "state-uncertain";
     default:
       return "state-draft";
   }
@@ -5453,12 +5487,12 @@ function exportToExcel() {
 
 function buildPostCardHtml(p, index, { selectable = true } = {}) {
   const cardClass = p.publishState === "publishing" ? "status-publishing" : `status-${p.publishState}`;
-  const canSelect = selectable && p.publishState !== "publishing";
+  const canSelect = selectable && (p.publishState === "draft" || p.publishState === "failed");
   return `
     <div class="post-card ${cardClass}" data-id="${p.id}">
       ${
         selectable
-          ? `<label class="post-check" title="${canSelect ? "选择发布" : "发布中"}">
+          ? `<label class="post-check" title="${canSelect ? "选择发布" : p.publishState === "uncertain" ? "请先核对广场发布记录" : "发布中"}">
         <input type="checkbox" class="post-select" data-id="${p.id}" ${p.selected ? "checked" : ""} ${canSelect ? "" : "disabled"} />
       </label>`
           : ""
@@ -5509,6 +5543,7 @@ function renderPosts() {
   const publishedPosts = getPublishedPosts();
   const monitorPosts = getPublishedPostsForMonitor();
   updateDraftStats();
+  updateDraftFilterCounts();
   updateSelectAllCheckbox();
   updatePublishBtn();
   updateDraftBulkAccountBar();
@@ -5521,7 +5556,9 @@ function renderPosts() {
         ? "暂无草稿"
         : currentFilter === "failed"
           ? "暂无失败帖子"
-          : "暂无待发帖子";
+          : currentFilter === "uncertain"
+            ? "暂无待确认帖子"
+            : "暂无待发帖子";
 
   const monitorAccountId = getSelectedMonitorAccountId();
   const monitorQuery = getMonitorSearchQuery();
@@ -6000,7 +6037,9 @@ function clearDrafts() {
   const draftPosts = posts.filter((p) => p.publishState === "draft" || p.publishState === "failed");
   if (!draftPosts.length) return alert("没有可清空的草稿");
   if (!confirm(`确定清空 ${draftPosts.length} 条草稿/失败帖子？已发布的帖子会保留。`)) return;
-  posts = posts.filter((p) => p.publishState === "published" || p.publishState === "publishing");
+  posts = posts.filter(
+    (p) => p.publishState === "published" || p.publishState === "publishing" || p.publishState === "uncertain",
+  );
   saveDrafts();
   renderPosts();
 }
@@ -6043,7 +6082,7 @@ function selectNone() {
 
 function toggleSelectAll(checked) {
   getFilteredPosts().forEach((p) => {
-    if (p.publishState !== "publishing") p.selected = checked;
+    if (p.publishState === "draft" || p.publishState === "failed") p.selected = checked;
   });
   saveDrafts();
   renderPosts();
@@ -6306,13 +6345,15 @@ async function startBatchPublish() {
   } catch (err) {
     publishQueue.forEach(({ post }) => {
       if (post.publishState === "publishing") {
-        post.publishState = "failed";
-        post.error = err.message;
+        post.publishState = "uncertain";
+        post.selected = false;
+        post.error =
+          "发布连接中断，结果尚未确认。请先到「已发布帖子」拉取广场记录核对，避免重复发布。";
       }
     });
     saveDrafts();
-    log(`✗ 请求失败: ${err.message}`, "err");
-    $("#progressText").textContent = "发布失败，请刷新页面后重试";
+    log(`⚠ 发布连接中断：${err.message || "未收到完整结果"}`, "err");
+    $("#progressText").textContent = "连接已中断，未确认的帖子已标记为「待确认」";
     renderPosts();
   }
 
@@ -6388,6 +6429,11 @@ function handleSSE(event, data, publishQueue) {
               log("发布成功。点击「拉取广场历史帖子」可获取该账号的历史帖子", "info");
             });
         }
+      } else if (data.uncertain) {
+        post.publishState = "uncertain";
+        post.error = data.error;
+        post.selected = false;
+        log(`⚠ 第 ${data.index + 1} 条结果待确认: ${data.error}`, "err");
       } else {
         post.publishState = "failed";
         post.error = data.error;
@@ -6405,8 +6451,11 @@ function handleSSE(event, data, publishQueue) {
 
     case "done":
       $("#progressBar").style.width = "100%";
-      $("#progressText").textContent = `完成！成功 ${data.succeeded} 条，失败 ${data.failed} 条`;
-      log(`批量发布完成: 成功 ${data.succeeded} / 失败 ${data.failed}`, "info");
+      $("#progressText").textContent = `完成：成功 ${data.succeeded} 条，失败 ${data.failed} 条${data.uncertain ? `，待确认 ${data.uncertain} 条` : ""}`;
+      log(
+        `批量发布完成: 成功 ${data.succeeded} / 失败 ${data.failed}${data.uncertain ? ` / 待确认 ${data.uncertain}` : ""}`,
+        "info",
+      );
       saveDrafts();
       break;
   }

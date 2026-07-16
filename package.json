@@ -1,7 +1,7 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.5",
-  "description": "Web UI for batch publishing posts to Binance Square",
+  "version": "1.0.6",
+  "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
   "main": "electron/main.cjs",
@@ -9,6 +9,7 @@
     "start": "node server.js",
     "desktop": "node scripts/run-desktop.cjs .",
     "desktop:bat": "scripts\\start-desktop.bat",
+    "test": "node --test",
     "build:win": "node scripts/build-win.cjs",
     "release:win": "node scripts/build-win.cjs",
     "install:browser": "playwright install chromium"
@@ -94,7 +95,7 @@
       }
     ],
     "releaseInfo": {
-      "releaseNotes": "修复 AI 写帖价格占位/串价、未选币误标用户指定，以及托管部分失败提示"
+      "releaseNotes": "这款工具专为币安广场创作者设计，支持批量发帖、多账号管理，以及 AI 辅助写帖。\n\n我们重点打磨了四件事：\n\n**稳定可靠**\n对网络、代理相关逻辑做了排查与加固，减少异常中断和难懂的报错。\n\n**网络更省心**\n连接不稳时，软件会自动重试、自动处理，尽量不让你反复看到「网络错误」，把精力放在内容上。\n\n**界面更好用**\n布局按日常发帖流程优化，操作更顺、阅读更舒服，常用功能一眼能找到。\n\n**AI 写帖更完整**\nAI 生成内容更贴近广场风格：结构更清晰、信息更完整，减少半成品文案，改一改就能发。\n\n适合：要批量运营、多账号托管、又想少踩网络坑、少自己憋文案的创作者。"
     }
   }
 }

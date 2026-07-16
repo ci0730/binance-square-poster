@@ -18,11 +18,12 @@ process.env.npm_config_electron_builder_binaries_mirror = process.env.ELECTRON_B
 process.env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
 
 function run(cmd, args, opts = {}) {
+  const useShell = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(String(cmd));
   const result = spawnSync(cmd, args, {
     stdio: "inherit",
     cwd: root,
     env: { ...process.env, ...opts.env },
-    shell: process.platform === "win32",
+    shell: useShell,
   });
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
