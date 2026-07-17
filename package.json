@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.0",
+  "version": "1.0.11",
   "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -29,6 +29,7 @@
   "build": {
     "appId": "com.binance-square.poster",
     "productName": "币安广场批量发帖",
+    "beforePack": "./scripts/nsis-show-details.cjs",
     "directories": {
       "output": "release"
     },

@@ -1,3 +1,8 @@
+!macro customHeader
+  ShowInstDetails show
+  ShowUninstDetails show
+!macroend
+
 !macro customInstall
   CreateDirectory "$INSTDIR\data"
   CreateDirectory "$INSTDIR\data\uploads"
@@ -6,4 +11,6 @@
   FileWrite $0 "包括：账号配置、AI 设置、代理、已发布帖子缓存、上传图片等。$\r$\n"
   FileWrite $0 "卸载软件时不会自动删除此目录，方便您保留数据。$\r$\n"
   FileClose $0
+  SetDetailsPrint both
+  DetailPrint "正在写入数据目录…"
 !macroend
