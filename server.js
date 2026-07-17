@@ -20,6 +20,7 @@ import {
   saveBrowserPath,
 } from "./lib/square-api.js";
 import { getUploadsDir, getConfigDir, getDataDirInfo, setCustomDataDir, resetCustomDataDir } from "./lib/app-paths.js";
+import { getCacheOverview, clearCacheItems } from "./lib/cache-manager.js";
 import {
   listAccountsPublic,
   createAccount,
@@ -55,6 +56,7 @@ import {
   resolveAiCredentials,
   readAiSettings,
   getRecentTokenPairs,
+  markRunStarted,
 } from "./lib/ai-settings.js";
 import { listAiProvidersPublic } from "./lib/ai-providers.js";
 import { generateSquarePost, testAiApiKey } from "./lib/ai-generator.js";
@@ -214,7 +216,10 @@ async function handleBatchPublish(req, res, posts, intervalSeconds) {
     try {
       const result = await publishPost(apiKey, post, uploadsDir, (info) => {
         send("progress", { index: i, total: posts.length, status: info.stage, message: info.message, accountName });
-      }, { proxyUrl: resolveAccountProxy(post.accountId) });
+      }, {
+        proxyUrl: resolveAccountProxy(post.accountId),
+        cookie: getAccountCookie(post.accountId),
+      });
       const accountId = post.accountId || getDefaultAccountId();
       if (accountId && result?.id) {
         cachePublishedPost(accountId, {
@@ -226,11 +231,25 @@ async function handleBatchPublish(req, res, posts, intervalSeconds) {
           source: "publish",
         });
       }
-      const item = { index: i, ok: true, result, text: post.text?.slice(0, 80), accountId: post.accountId || null };
+      const item = {
+        index: i,
+        ok: true,
+        result,
+        text: post.text?.slice(0, 80),
+        accountId: post.accountId || null,
+        confirmedByFetch: result?.publishStatus === "confirmed_by_fetch",
+      };
       results.push(item);
       send("result", item);
     } catch (err) {
-      const item = { index: i, ok: false, error: err.message, text: post.text?.slice(0, 80) };
+      const item = {
+        index: i,
+        ok: false,
+        uncertain: err?.code === "PUBLISH_CONFIRMATION_UNKNOWN",
+        error: err.message,
+        text: post.text?.slice(0, 80),
+        accountId: post.accountId || null,
+      };
       results.push(item);
       send("result", item);
       if (err.message.includes("220009") || err.message.includes("已达上限")) {
@@ -638,6 +657,37 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/cache" && req.method === "GET") {
+      json(res, 200, getCacheOverview(__dirname));
+      return;
+    }
+
+    if (pathname === "/api/cache/clear" && req.method === "POST") {
+      const body = req.headers["content-length"] ? JSON.parse(await readBody(req)) : {};
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      if (!ids.length) {
+        json(res, 400, { error: "请选择要清理的缓存项" });
+        return;
+      }
+      const result = clearCacheItems(ids, __dirname);
+      const labels = {
+        posts: "已发布帖子缓存",
+        uploads: "上传图片/配图",
+        tokens: "代币地址列表",
+        runtime: "运行时行情/资讯缓存",
+        logs: "运行日志",
+      };
+      const names = result.cleared.map((id) => labels[id] || id).join("、");
+      appendSystemLog(`已清理缓存：${names || "无"}`, { type: "info", source: "settings" });
+      json(res, 200, {
+        ...result,
+        message: result.cleared.length
+          ? `已清理：${names}`
+          : "未清理到可删除内容",
+      });
+      return;
+    }
+
     if (pathname === "/api/config" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
       const key = String(body.apiKey || "").trim();
@@ -691,10 +741,31 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/publish/single" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
       const apiKey = resolveAccountApiKey(body.accountId);
-      const result = await publishPost(apiKey, body, uploadsDir, undefined, {
-        proxyUrl: resolveAccountProxy(body.accountId),
-      });
-      json(res, 200, { ok: true, result });
+      try {
+        const result = await publishPost(apiKey, body, uploadsDir, undefined, {
+          proxyUrl: resolveAccountProxy(body.accountId),
+          cookie: getAccountCookie(body.accountId),
+        });
+        const accountId = body.accountId || getDefaultAccountId();
+        if (accountId && result?.id) {
+          cachePublishedPost(accountId, {
+            id: result.id,
+            text: body.text,
+            title: body.title || "",
+            shareLink: result.shareLink,
+            publishedAt: Date.now(),
+            source: "publish",
+          });
+        }
+        json(res, 200, { ok: true, result });
+      } catch (err) {
+        const status = err?.code === "PUBLISH_CONFIRMATION_UNKNOWN" ? 409 : 500;
+        json(res, status, {
+          ok: false,
+          uncertain: err?.code === "PUBLISH_CONFIRMATION_UNKNOWN",
+          error: err.message,
+        });
+      }
       return;
     }
 
@@ -1061,6 +1132,8 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/ai/config" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
+      const deferFirstRun = Boolean(body?.deferFirstRun);
+      if ("deferFirstRun" in body) delete body.deferFirstRun;
       const current = readAiSettings();
       const isDisabling = body?.enabled === false;
       const hostingLocked = Boolean(current.enabled) || isAiHostRunActive();
@@ -1073,10 +1146,15 @@ const server = http.createServer(async (req, res) => {
       }
       if (isDisabling) requestAiHostCancel();
       const saved = saveAiSettings(body);
+      // 开启托管但不立刻跑：把「上次运行」记为现在，下次按运行间隔再发
+      if (deferFirstRun && saved.enabled) {
+        markRunStarted();
+      }
+      const publicSettings = getAiSettingsPublic();
       json(res, 200, {
         ok: true,
-        ...saved,
-        hostingLocked: Boolean(saved.enabled) || isAiHostRunActive(),
+        ...publicSettings,
+        hostingLocked: Boolean(publicSettings.enabled) || isAiHostRunActive(),
         runActive: isAiHostRunActive(),
       });
       return;

@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -97,7 +97,7 @@
       }
     ],
     "releaseInfo": {
-      "releaseNotes": "v1.0.9\n\n- 升级后智能合并旧目录账号 / AI / 代理配置，空壳账号可自动救援\n- AI 中转站 502 / 分组不支持时自动换模型，错误提示更明确\n- 安装版 Socks5 代理依赖加载更稳，测速与出网更可靠\n- VPN 信号对齐 Clash 实际出站节点，并去掉流量倍率前缀显示"
+      "releaseNotes": "v1.0.10\n\n- 发帖前 VPN 预检：节点不通时自动切换 Clash 节点并预热隧道\n- 确认回包丢失后自动核对广场记录，避免重复发帖\n- 开启托管时可选择立即发布，或按运行间隔稍后再发\n- 取消托管可打断并行 AI 写稿，不再长时间卡在「正在停止」\n- 自动配图改为新闻图 + 行情网站截图；桌面标题栏跟随深色主题\n- 设置分栏、缓存清理与多项稳定性修复"
     }
   }
 }

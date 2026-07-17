@@ -88,10 +88,11 @@ function bindConfirmModal() {
   $("#btnConfirmModalCancel")?.addEventListener("click", () => finishAppConfirm(false));
   modal.addEventListener("cancel", (e) => {
     e.preventDefault();
-    finishAppConfirm(false);
+    finishAppConfirm(null);
   });
   modal.addEventListener("close", () => {
-    if (confirmModalResolver) finishAppConfirm(false);
+    // 点遮罩关闭等：视为放弃，不触发「取消」按钮含义
+    if (confirmModalResolver) finishAppConfirm(null);
   });
 }
 
@@ -103,12 +104,12 @@ function finishAppConfirm(result) {
     // 先清空 resolver，避免 close 事件再次 finish 造成重复回调
     modal.close();
   }
-  if (typeof resolve === "function") resolve(Boolean(result));
+  if (typeof resolve === "function") resolve(result);
 }
 
 /**
  * 软件内确认弹窗（替代系统 confirm）
- * @returns {Promise<boolean>}
+ * @returns {Promise<boolean|null>} true=确定，false=点取消按钮，null=关闭/Esc 放弃
  */
 function appConfirm({
   title = "确认",
@@ -131,7 +132,7 @@ function appConfirm({
       return;
     }
 
-    if (confirmModalResolver) finishAppConfirm(false);
+    if (confirmModalResolver) finishAppConfirm(null);
 
     const tone = variant || (danger ? "danger" : "warn");
     wrap.classList.remove("is-danger", "is-ok", "is-info", "is-alert", "is-warn");
@@ -286,6 +287,8 @@ function applyTheme(theme = getTheme()) {
   const label = $("#themeToggleLabel");
   if (icon) icon.innerHTML = theme === "dark" ? THEME_TOGGLE_ICONS.dark : THEME_TOGGLE_ICONS.light;
   if (label) label.textContent = theme === "dark" ? "白天模式" : "黑夜模式";
+  // 桌面版标题栏随应用昼夜模式切换，避免白顶栏和深色界面不搭
+  window.desktopApi?.setNativeTheme?.(theme)?.catch?.(() => {});
 }
 
 function toggleTheme() {
@@ -550,21 +553,131 @@ function switchView(view) {
   if (target) target.classList.remove("hidden");
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   if (view === "api") {
+    restoreSubTab("api");
     updateApiStatusCard();
     refreshApiAiManagePanel();
   }
   if (view === "ai") loadAiConfig();
-  if (view === "ai-host") loadAiConfig();
+  if (view === "ai-host") {
+    restoreSubTab("ai-host");
+    loadAiConfig();
+  }
   if (view === "tokens") loadTokenRegistry();
   else stopTokenQuotesAutoRefresh();
   if (view === "monitor") {
+    restoreSubTab("monitor");
     renderMonitorAccountSelect();
     updateMonitorSectionHint();
   }
-  if (view === "home") renderHomeDashboard();
-  if (view === "logs") $("#progressPanel")?.classList.remove("hidden");
+  if (view === "home") {
+    restoreSubTab("home");
+    renderHomeDashboard();
+  }
+  if (view === "settings") {
+    const tab = localStorage.getItem("bsp-settings-tab") || "proxy";
+    switchSettingsTab(tab);
+  }
+  if (view === "logs") {
+    restoreSubTab("logs");
+    $("#progressPanel")?.classList.remove("hidden");
+  }
   renderPosts();
   renderAlerts();
+}
+
+const SETTINGS_TAB_IDS = new Set(["proxy", "data", "browser", "publish", "cache", "update"]);
+const SUBTAB_DEFAULTS = {
+  home: "overview",
+  api: "binance",
+  "ai-host": "control",
+  monitor: "posts",
+  logs: "progress",
+  "account-modal": "basic",
+};
+
+function switchSubTab(group, tabId, { persist = true } = {}) {
+  const root =
+    group === "account-modal"
+      ? $("#accountModal")
+      : $(`[data-subtabs="${group}"]`)?.closest(".view-panel, .modal, section") || document;
+  if (!root) return;
+  const tabsRoot = root.querySelector(`[data-subtabs="${group}"]`) || $(`[data-subtabs="${group}"]`);
+  if (!tabsRoot) return;
+  const allowed = [...tabsRoot.querySelectorAll(".sub-tab")].map((b) => b.dataset.subtab).filter(Boolean);
+  const fallback = SUBTAB_DEFAULTS[group] || allowed[0];
+  const next = allowed.includes(tabId) ? tabId : fallback;
+  if (persist) localStorage.setItem(`bsp-subtab-${group}`, next);
+
+  tabsRoot.querySelectorAll(".sub-tab").forEach((btn) => {
+    const active = btn.dataset.subtab === next;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+
+  const paneSelector =
+    group === "account-modal"
+      ? `.modal-sub-pane[data-subpane]`
+      : `.sub-pane[data-subpane]`;
+  const panesParent = group === "account-modal" ? $("#accountModal") : root;
+  panesParent?.querySelectorAll(paneSelector).forEach((pane) => {
+    // 只切换同组：同一 view 下所有 sub-pane
+    if (group !== "account-modal") {
+      const paneGroup = pane.closest(".view-panel")?.querySelector("[data-subtabs]")?.dataset.subtabs;
+      if (paneGroup && paneGroup !== group) return;
+    }
+    const active = pane.dataset.subpane === next;
+    pane.classList.toggle("active", active);
+    if (active) pane.removeAttribute("hidden");
+    else pane.setAttribute("hidden", "");
+  });
+}
+
+function restoreSubTab(group) {
+  const saved = localStorage.getItem(`bsp-subtab-${group}`) || SUBTAB_DEFAULTS[group];
+  switchSubTab(group, saved, { persist: false });
+}
+
+function switchSettingsTab(tabId) {
+  const next = SETTINGS_TAB_IDS.has(tabId) ? tabId : "proxy";
+  localStorage.setItem("bsp-settings-tab", next);
+  $$("#settingsTabs .settings-tab").forEach((btn) => {
+    const active = btn.dataset.settingsTab === next;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  $$("#view-settings .settings-pane").forEach((pane) => {
+    const active = pane.dataset.settingsPane === next;
+    pane.classList.toggle("active", active);
+    if (active) pane.removeAttribute("hidden");
+    else pane.setAttribute("hidden", "");
+  });
+  if (next === "cache") loadCacheOverview({ silent: true });
+}
+
+function renderHomeCompactPublished(list, emptyText = "暂无已发布帖子") {
+  const container = $("#homePublishedList");
+  if (!container) return;
+  if (!list.length) {
+    container.innerHTML = `<div class="empty-state"><p>${escapeHtml(emptyText)}</p></div>`;
+    return;
+  }
+  container.innerHTML = list
+    .map((p, i) => {
+      const preview = escapeHtml(postPreview(p.text || p.title || "", 56));
+      const account = escapeHtml(getPostAccountName(p) || "—");
+      const views = p.stats?.viewCount ?? p.viewCount ?? "—";
+      const time = formatTime(p.publishedAt || p.createdAt, true) || "—";
+      const link = p.result?.shareLink || p.shareLink || "";
+      return `<div class="home-compact-item" data-id="${escapeHtml(p.id)}">
+        <span class="home-compact-index">${i + 1}</span>
+        <div class="home-compact-main">
+          <strong title="${preview}">${preview || "（无正文）"}</strong>
+          <span>${account}${link ? ` · <a href="${escapeHtml(link)}" target="_blank" rel="noopener">打开</a>` : ""}</span>
+        </div>
+        <div class="home-compact-meta"><em>浏览 ${escapeHtml(String(views))}</em>${escapeHtml(time)}</div>
+      </div>`;
+    })
+    .join("");
 }
 
 function renderHomeDashboard() {
@@ -613,7 +726,7 @@ function renderHomeDashboard() {
   $("#homeFailedCount").textContent = String(failedCount);
   $("#homeAccountCount").textContent = String(accountStore.accounts.length);
   const hint = $("#homePublishedListHint");
-  if (hint) hint.textContent = publishedCount ? `共 ${publishedCount} 条` : "";
+  if (hint) hint.textContent = publishedCount ? `共 ${publishedCount} 条 · 显示最近 8 条` : "";
 }
 
 function appendSystemLog(msg, type = "info") {
@@ -1473,6 +1586,18 @@ async function refreshAiRuntimeStatus() {
   try {
     const res = await fetch("/api/ai/config");
     const data = await res.json();
+    // 与后端运行态对齐：刷新后仍能显示「运行中/取消」；本页发起的任务由 aiRun finally 收尾
+    if (typeof data.runActive === "boolean") {
+      if (data.runActive) {
+        if (!aiRunning) {
+          aiRunning = true;
+          updateAiHostingButtons({ enabled: Boolean(data.enabled) });
+        }
+      } else if (aiRunning && !localAiRunOwned) {
+        aiRunning = false;
+        updateAiHostingButtons({ enabled: Boolean(data.enabled) });
+      }
+    }
     renderAiStatus(data);
     // 同步各账号「今日」额度到托管列表，避免发帖后表格仍显示旧值
     if (Array.isArray(data.hostedAccounts) && aiHostedAccountsCache.length) {
@@ -1783,6 +1908,7 @@ async function applySystemProxyFromGuide() {
 
 function goProxySetupSettings() {
   $("#proxySetupModal")?.close();
+  localStorage.setItem("bsp-settings-tab", "proxy");
   switchView("settings");
   const typeSelect = $("#globalProxyTypeSelect");
   if (typeSelect) typeSelect.value = "http";
@@ -1800,12 +1926,17 @@ function bindEvents() {
 
   $("#btnHomeManageAccount")?.addEventListener("click", () => switchView("accounts"));
   $("#btnHomeViewAllPublished")?.addEventListener("click", () => switchView("published"));
+  $("#btnHomeViewAllPublishedOverview")?.addEventListener("click", () => switchView("published"));
+  $("#btnHomeGotoRecent")?.addEventListener("click", () => switchSubTab("home", "recent"));
 
   $("#btnTestDefaultApi")?.addEventListener("click", testDefaultApi);
   $("#btnGoAccounts")?.addEventListener("click", () => switchView("accounts"));
   $("#btnAddAiProfile")?.addEventListener("click", () => openAiProfileModal(null));
   $("#btnGoAiSettings")?.addEventListener("click", () => switchView("ai"));
-  $("#btnGoAiHostFromStyles")?.addEventListener("click", () => switchView("ai-host"));
+  $("#btnGoAiHostFromStyles")?.addEventListener("click", () => {
+    localStorage.setItem("bsp-subtab-ai-host", "control");
+    switchView("ai-host");
+  });
   $("#btnAddToken")?.addEventListener("click", () => openTokenModal(null));
   $("#btnRefreshTokenQuotes")?.addEventListener("click", () => refreshTokenQuotes(true));
   $("#btnSyncBinanceTokens")?.addEventListener("click", syncBinanceTokensFromUi);
@@ -1875,6 +2006,21 @@ function bindEvents() {
   $("#btnResetDataDir")?.addEventListener("click", resetDataDir);
   $("#btnRestartApp")?.addEventListener("click", restartAppForDataDir);
   $("#btnCheckUpdate")?.addEventListener("click", manualCheckForUpdates);
+  $("#btnRefreshCache")?.addEventListener("click", () => loadCacheOverview({ silent: false }));
+  $("#btnClearSelectedCache")?.addEventListener("click", clearSelectedCache);
+  $("#settingsTabs")?.addEventListener("click", (e) => {
+    const btn = e.target.closest(".settings-tab");
+    if (!btn) return;
+    switchSettingsTab(btn.dataset.settingsTab);
+  });
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".sub-tab");
+    if (!btn) return;
+    const group = btn.closest("[data-subtabs]")?.dataset.subtabs;
+    if (!group) return;
+    e.preventDefault();
+    switchSubTab(group, btn.dataset.subtab);
+  });
   $("#btnUpdateDownload")?.addEventListener("click", startUpdateDownload);
   $("#btnUpdateInstall")?.addEventListener("click", installDownloadedUpdate);
   $("#btnUpdateLater")?.addEventListener("click", () => dismissUpdateModal(true));
@@ -1908,7 +2054,7 @@ function bindEvents() {
     }
   });
   $("#btnAiGenerateDraft").addEventListener("click", () => aiRun({ publish: false }));
-  $("#btnAiRunNow").addEventListener("click", () => aiRun({ publish: true }));
+  $("#btnAiRunNow").addEventListener("click", onAiHostStartClick);
   $("#btnAiCancelHosting").addEventListener("click", stopAiHosting);
   $("#btnHostSelectAll")?.addEventListener("click", selectAllHostedAccounts);
   $("#btnHostSelectPage")?.addEventListener("click", selectHostedAccountsOnPage);
@@ -2108,6 +2254,7 @@ function openAccountModal(accountId) {
     isEdit && acc?.hasApiKey ? "编辑模式：API Key 留空不会丢失，验证将使用已保存的 Key。" : "",
     isEdit && acc?.hasApiKey ? "info" : "",
   );
+  switchSubTab("account-modal", "basic", { persist: false });
   openAppModal("accountModal");
 }
 
@@ -2585,13 +2732,21 @@ async function saveAccountFromModal() {
   const cookieRaw = $("#accountCookieInput").value;
   const existing = accountId ? accountStore.accounts.find((a) => a.id === accountId) : null;
 
-  if (!name) return showAccountFormMessage("请输入账号名称", "err");
-  if (!accountId && !apiKey) return showAccountFormMessage("请输入 API Key", "err");
+  if (!name) {
+    switchSubTab("account-modal", "basic", { persist: false });
+    return showAccountFormMessage("请输入账号名称", "err");
+  }
+  if (!accountId && !apiKey) {
+    switchSubTab("account-modal", "basic", { persist: false });
+    return showAccountFormMessage("请输入 API Key", "err");
+  }
   if (accountId && !apiKey && !existing?.hasApiKey) {
+    switchSubTab("account-modal", "basic", { persist: false });
     return showAccountFormMessage("该账号还没有 API Key，请填写后再保存", "err");
   }
   if (["http", "https", "socks5", "ssh"].includes(proxyConfig.type)) {
     if (!proxyConfig.host || !proxyConfig.port) {
+      switchSubTab("account-modal", "proxy", { persist: false });
       return showAccountFormMessage("请填写代理主机和端口", "err");
     }
   }
@@ -2894,6 +3049,120 @@ async function refreshDataDirInfo() {
     applyDataDirToUI(await res.json());
   } catch {
     // ignore
+  }
+}
+
+function showCacheMessage(msg, type) {
+  const el = $("#cacheMessage");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = msg ? `message ${type}` : "message";
+}
+
+function renderCacheItem(item, { protectedMode = false } = {}) {
+  const detail = escapeHtml(item.detail || "");
+  const desc = escapeHtml(item.description || "");
+  const label = escapeHtml(item.label || item.id);
+  const size = escapeHtml(item.sizeLabel || "—");
+  if (protectedMode) {
+    return `<div class="cache-item protected" data-id="${escapeHtml(item.id)}">
+      <div class="cache-item-main">
+        <strong>${label}</strong>
+        <span>${desc}</span>
+      </div>
+      <div class="cache-item-meta"><em>${size}</em>${detail}</div>
+    </div>`;
+  }
+  const checked = item.checked !== false ? "checked" : "";
+  return `<div class="cache-item" data-id="${escapeHtml(item.id)}">
+    <input type="checkbox" class="cache-item-check" data-cache-id="${escapeHtml(item.id)}" ${checked} />
+    <div class="cache-item-main">
+      <strong>${label}</strong>
+      <span>${desc}</span>
+    </div>
+    <div class="cache-item-meta"><em>${size}</em>${detail}</div>
+  </div>`;
+}
+
+function applyCacheOverviewToUI(data = {}) {
+  const protectedList = $("#cacheProtectedList");
+  const clearableList = $("#cacheClearableList");
+  const totalHint = $("#cacheTotalHint");
+  if (protectedList) {
+    protectedList.innerHTML = (data.protectedItems || [])
+      .map((item) => renderCacheItem(item, { protectedMode: true }))
+      .join("") || `<div class="hint">暂无</div>`;
+  }
+  if (clearableList) {
+    clearableList.innerHTML = (data.cacheItems || [])
+      .map((item) => renderCacheItem(item))
+      .join("") || `<div class="hint">暂无可清理缓存</div>`;
+  }
+  if (totalHint) {
+    totalHint.textContent = `可清理合计：${data.totalClearableLabel || "0 B"}（不含账号 / AI 配置）`;
+  }
+}
+
+async function loadCacheOverview({ silent = true } = {}) {
+  if (!$("#cacheCleanPanel")) return;
+  try {
+    const res = await fetch("/api/cache");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "加载缓存信息失败");
+    applyCacheOverviewToUI(data);
+    if (!silent) showCacheMessage("已刷新缓存占用", "ok");
+  } catch (err) {
+    showCacheMessage(err.message || "加载缓存信息失败", "err");
+  }
+}
+
+function getSelectedCacheIds() {
+  return Array.from($$("#cacheClearableList .cache-item-check:checked"))
+    .map((el) => el.dataset.cacheId)
+    .filter(Boolean);
+}
+
+async function clearSelectedCache() {
+  const ids = getSelectedCacheIds();
+  if (!ids.length) {
+    showCacheMessage("请先勾选要清理的缓存项", "err");
+    return;
+  }
+  const labels = Array.from($$("#cacheClearableList .cache-item-check:checked")).map((el) => {
+    const row = el.closest(".cache-item");
+    return row?.querySelector("strong")?.textContent?.trim() || el.dataset.cacheId;
+  });
+  const ok = await appConfirm({
+    title: "清理缓存",
+    message: `确认清理所选缓存？\n\n${labels.map((n) => `· ${n}`).join("\n")}\n\n不会删除账号配置与 AI 配置。`,
+  });
+  if (!ok) return;
+  showCacheMessage("正在清理…", "info");
+  try {
+    const res = await fetch("/api/cache/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "清理失败");
+    if (data.overview) applyCacheOverviewToUI(data.overview);
+    else await loadCacheOverview({ silent: true });
+    showCacheMessage(data.message || "清理完成", "ok");
+    if (ids.includes("logs")) {
+      systemLogSinceId = 0;
+      const box = $("#systemLog");
+      if (box) box.innerHTML = "";
+    }
+    if (ids.includes("tokens")) {
+      try {
+        await loadTokenRegistry({ autoSyncIfSeed: false });
+      } catch {
+        // ignore
+      }
+    }
+  } catch (err) {
+    showCacheMessage(err.message || "清理失败", "err");
   }
 }
 
@@ -3257,6 +3526,8 @@ function formatTime(ts, compact = false) {
 }
 
 let aiRunning = false;
+/** 本页是否正在发起 /api/ai/run（与后端 runActive 区分，避免轮询误清） */
+let localAiRunOwned = false;
 let aiRunToken = 0;
 let aiCustomTokens = [];
 /** @type {Record<string, string[]>} */
@@ -4069,13 +4340,22 @@ function renderHostedSummary(hosted = []) {
   `;
 }
 
+function showHostMetricsStatus(msg, type = "") {
+  const el = $("#hostMetricsStatus");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = `host-metrics-status${type ? ` ${type}` : ""}`;
+  if (msg) el.title = msg;
+  else el.removeAttribute("title");
+}
+
 /** 一键获取托管账号互动：默认经全局代理（公开读接口） */
 async function refreshHostedAccountMetrics() {
   const btn = $("#btnHostRefreshMetrics");
   const targets = getBatchTokenTargetAccounts();
   const accountIds = targets.map((item) => item.accountId).filter(Boolean);
   if (!accountIds.length) {
-    showAiMessage("请先勾选托管账号，或把批量范围改成「全部/本页」", "err");
+    showHostMetricsStatus("请先勾选托管账号，或把批量范围改成「全部/本页」", "err");
     return;
   }
 
@@ -4088,9 +4368,9 @@ async function refreshHostedAccountMetrics() {
   const startedAt = Date.now();
   const tick = setInterval(() => {
     const sec = Math.floor((Date.now() - startedAt) / 1000);
-    showAiMessage(`正在拉取互动（经全局代理）…已等待 ${sec}s`, "info");
+    showHostMetricsStatus(`正在拉取互动（经全局代理）…已等待 ${sec}s`, "info");
   }, 1000);
-  showAiMessage("正在拉取互动（经全局代理，不占用账号 SOCKS）…", "info");
+  showHostMetricsStatus("正在拉取互动（经全局代理，不占用账号 SOCKS）…", "info");
 
   // 先把本地已发布帖子同步进缓存（限时，避免拖死）
   try {
@@ -4152,15 +4432,15 @@ async function refreshHostedAccountMetrics() {
         .join("；");
       msg += `；${failList.length} 个未成功：${brief}${failList.length > 3 ? "…" : ""}`;
     }
-    showAiMessage(msg, failList.length && !okList.length ? "err" : failList.length ? "info" : "ok");
+    showHostMetricsStatus(msg, failList.length && !okList.length ? "err" : failList.length ? "info" : "ok");
   } catch (err) {
     if (err?.name === "AbortError") {
-      showAiMessage(
+      showHostMetricsStatus(
         "获取互动仍超时。请完全退出软件（含托盘）再打开；并确认「设置」里全局代理可用",
         "err",
       );
     } else {
-      showAiMessage(err.message || "获取互动失败", "err");
+      showHostMetricsStatus(err.message || "获取互动失败", "err");
     }
   } finally {
     clearInterval(tick);
@@ -5353,23 +5633,34 @@ function updateAiHostingButtons(data) {
   const cancelBtn = $("#btnAiCancelHosting");
   const on = Boolean(data?.enabled);
   const locked = aiRunning || on;
+  const stopping = aiRunning && !on;
 
   if (cancelBtn) {
     cancelBtn.classList.toggle("hidden", !locked);
     // 已点取消但仍在跑本轮时，按钮保持可见并提示正在停止
-    cancelBtn.disabled = aiRunning && !on;
-    cancelBtn.textContent = aiRunning && !on ? "正在停止…" : "取消托管";
+    cancelBtn.disabled = stopping;
+    cancelBtn.textContent = stopping ? "正在停止…" : "取消托管";
     cancelBtn.title = on
       ? "关闭自动托管；若本轮仍在跑会尽快结束，结束后才能改设置"
-      : aiRunning
-        ? "正在结束本轮任务，结束后即可修改设置"
+      : stopping
+        ? "正在结束本轮任务（已打断 AI 写稿），结束后即可修改设置"
         : "";
   }
 
   syncAiHostingSettingsLock(locked);
 
-  // 运行中只更新取消按钮显隐，不改主按钮文案（避免把「运行中...」冲掉或乱恢复）
-  if (aiRunning) return;
+  // 运行中：取消后把主按钮也改成「正在停止」，避免和绿色「运行中」并存造成误解
+  if (aiRunning) {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = stopping ? "正在停止…" : "运行中...";
+      btn.title = stopping
+        ? "已取消托管，正在结束当前写稿/发帖任务"
+        : "托管任务进行中";
+    }
+    if (draftBtn) draftBtn.disabled = true;
+    return;
+  }
 
   if (draftBtn) draftBtn.disabled = locked;
   if (!btn) return;
@@ -5409,6 +5700,7 @@ function isAiHostingSettingsLocked() {
 /** 强制回到「未点开启」的按钮态（含卡住「运行中...」时） */
 function resetAiHostingRunUi(data = { enabled: false }) {
   aiRunning = false;
+  localAiRunOwned = false;
   aiRunToken += 1;
   const runBtn = $("#btnAiRunNow");
   const draftBtn = $("#btnAiGenerateDraft");
@@ -5433,7 +5725,10 @@ async function stopAiHosting() {
   // 本轮若仍在跑，保持锁定直到结束
   if (aiRunning) {
     updateAiHostingButtons({ enabled: false });
-    showAiMessage("已取消自动托管，正在结束本轮任务…结束后即可修改设置。", "ok");
+    showAiMessage(
+      "已取消自动托管。若正在 AI 写稿，会立刻打断并结束本轮；结束后即可改设置。",
+      "ok",
+    );
     return;
   }
   resetAiHostingRunUi(saved || { enabled: false });
@@ -5454,6 +5749,7 @@ function renderAiStatus(data) {
     data.model ? `模型: ${data.model}` : "",
     data.hasApiKey ? `AI Key: ${data.maskedKey}` : "AI Key: 未配置",
     data.enabled ? "托管: 已开启" : "托管: 未开启",
+    data.attachRelatedImages !== false ? "自动配图: 开" : "自动配图: 关",
     `单账号每日上限 ${data.maxPostsPerDay || 10} 条 · 今日合计已发 ${data.todayPublished || 0} 条`,
     `上次运行 ${formatTime(data.lastRunAt)}`,
   ];
@@ -5956,6 +6252,74 @@ function addDraftsFromAiPosts(generatedPosts, { accountId, accountName } = {}) {
   updatePublishBtn();
 }
 
+async function onAiHostStartClick() {
+  // 已在托管中：按钮含义是「立即发一条」，不再询问
+  if ($("#aiEnabled")?.checked || isAiHostingSettingsLocked()) {
+    await aiRun({ publish: true });
+    return;
+  }
+
+  const intervalMinutes = Math.max(1, Math.min(Number($("#aiIntervalInput")?.value) || 60, 1440));
+  const choice = await appConfirm({
+    title: "开启 AI 托管",
+    html: `
+      <p>是否立即按托管流程发布文章？</p>
+      <p class="hint" style="margin-top:10px;line-height:1.55">
+        <strong>立即发布</strong>：马上写稿并发帖，之后仍按间隔自动托管。<br>
+        <strong>稍后再发</strong>：先开启托管，约 <strong>${intervalMinutes}</strong> 分钟后再按流程自动发布。
+      </p>
+    `,
+    confirmText: "立即发布",
+    cancelText: "稍后再发",
+    variant: "info",
+  });
+
+  if (choice === null) return; // Esc / 点遮罩：不开启
+  if (choice === true) {
+    await aiRun({ publish: true });
+    return;
+  }
+  await enableAiHostingDeferred(intervalMinutes);
+}
+
+/** 开启托管但不立刻跑本轮：等「运行间隔」后再由调度器按流程发布 */
+async function enableAiHostingDeferred(intervalMinutes) {
+  const config = collectAiConfigFromUI();
+  const enabledCount = config.hostedAccounts.filter((item) => item.enabled).length;
+  if (!enabledCount) {
+    showAiMessage("请至少勾选一个托管账号", "err");
+    return;
+  }
+  if (!aiProfilesCache.some((item) => item.enabled && item.hasApiKey)) {
+    const current = await fetch("/api/ai/config").then((r) => r.json()).catch(() => ({}));
+    const hasConfiguredAi =
+      current.hasApiKey ||
+      (current.aiProfiles || []).some((item) => item.enabled && item.hasApiKey);
+    if (!hasConfiguredAi) {
+      showAiMessage("请先在「API 管理」中配置至少一个 AI", "err");
+      return;
+    }
+  }
+
+  const saved = await saveAiConfig(
+    { enabled: true, autoPublish: true, deferFirstRun: true },
+    { silent: true },
+  );
+  if (!saved) return;
+
+  if ($("#aiEnabled")) $("#aiEnabled").checked = true;
+  updateAiHostingButtons(saved);
+  renderAiStatus(saved);
+  const nextLabel =
+    saved.nextRunAt != null
+      ? formatTime(saved.nextRunAt)
+      : `约 ${intervalMinutes} 分钟后`;
+  showAiMessage(
+    `自动托管已开启，将于 ${nextLabel} 按流程自动发布（运行间隔 ${intervalMinutes} 分钟）。需要马上发可再点「立即发一条」。`,
+    "ok",
+  );
+}
+
 async function aiRun({ publish = false } = {}) {
   if (aiRunning) return;
   const config = collectAiConfigFromUI();
@@ -5995,6 +6359,7 @@ async function aiRun({ publish = false } = {}) {
   const btn = publish ? $("#btnAiRunNow") : $("#btnAiGenerateDraft");
   const runToken = ++aiRunToken;
   aiRunning = true;
+  localAiRunOwned = true;
   updateAiHostingButtons({ enabled: Boolean(savedConfig?.enabled || $("#aiEnabled")?.checked) });
   if (btn) {
     btn.disabled = true;
@@ -6085,6 +6450,7 @@ async function aiRun({ publish = false } = {}) {
     clearInterval(progressTimer);
     if (runToken !== aiRunToken) return;
     aiRunning = false;
+    localAiRunOwned = false;
     if (btn) {
       btn.disabled = false;
       btn.textContent = btn.dataset.prevText || btn.textContent;
@@ -6693,11 +7059,8 @@ function renderPosts() {
     selectable: false,
     emptyText: "暂无已发布帖子，可点击「拉取广场历史帖子」同步",
   });
-  const homePublished = publishedPosts.slice(0, 12);
-  renderPostListContainer($("#homePublishedList"), homePublished, {
-    selectable: false,
-    emptyText: "暂无已发布帖子，去草稿箱发布或拉取广场历史帖子",
-  });
+  const homePublished = publishedPosts.slice(0, 8);
+  renderHomeCompactPublished(homePublished, "暂无已发布帖子，去草稿箱发布或拉取广场历史帖子");
   if (activeView === "home") renderHomeDashboard();
 }
 

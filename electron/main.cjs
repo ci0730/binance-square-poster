@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell, Menu, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, shell, Menu, ipcMain, nativeTheme } = require("electron");
 const { spawn } = require("child_process");
 const http = require("http");
 const path = require("path");
@@ -7,10 +7,22 @@ const { initAutoUpdater } = require("./updater.cjs");
 
 const PORT = process.env.PORT || 3456;
 const APP_URL = `http://127.0.0.1:${PORT}`;
+const WINDOW_BG = {
+  dark: "#0b0e11",
+  light: "#e8ecf1",
+};
 
 let mainWindow = null;
 let serverProcess = null;
 let creatingMainWindow = false;
+
+function applyNativeWindowTheme(theme = "dark") {
+  const mode = theme === "light" ? "light" : "dark";
+  nativeTheme.themeSource = mode;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBackgroundColor(WINDOW_BG[mode]);
+  }
+}
 
 function getLegacyInstallDataDir() {
   if (!app.isPackaged) return null;
@@ -272,6 +284,8 @@ function stopServer() {
 function createWindow() {
   creatingMainWindow = true;
   try {
+    // 标题栏跟随应用主题（默认深色，避免白顶栏和深色 UI 割裂）
+    applyNativeWindowTheme("dark");
     mainWindow = new BrowserWindow({
       width: 1360,
       height: 920,
@@ -280,7 +294,7 @@ function createWindow() {
       title: "币安广场批量发帖",
       autoHideMenuBar: true,
       show: false,
-      backgroundColor: "#0b1220",
+      backgroundColor: WINDOW_BG.dark,
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -407,6 +421,11 @@ if (!gotLock) {
     ipcMain.handle("restart-app", () => {
       app.relaunch();
       app.exit(0);
+    });
+
+    ipcMain.handle("set-native-theme", (_event, theme) => {
+      applyNativeWindowTheme(theme === "light" ? "light" : "dark");
+      return nativeTheme.themeSource;
     });
 
     initAutoUpdater(() => mainWindow);

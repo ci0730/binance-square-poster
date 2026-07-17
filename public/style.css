@@ -633,7 +633,79 @@ a { color: var(--accent); }
   display: grid;
   grid-template-columns: 1.4fr 1fr;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 0;
+}
+
+.home-overview-actions {
+  margin-top: 14px;
+}
+
+.home-compact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.home-compact-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+}
+
+.home-compact-index {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.home-compact-main {
+  min-width: 0;
+}
+
+.home-compact-main strong {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-compact-main span {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-compact-meta {
+  text-align: right;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.home-compact-meta em {
+  display: block;
+  font-style: normal;
+  color: var(--text);
+  font-weight: 600;
 }
 
 .home-panel-head {
@@ -946,6 +1018,175 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   margin-bottom: 20px;
 }
 .panel h2 { font-size: 1rem; margin-bottom: 12px; }
+
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface2);
+}
+.settings-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.84rem;
+  padding: 8px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.settings-tab:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+.settings-tab.active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border);
+  font-weight: 600;
+}
+#view-settings .settings-pane {
+  display: none;
+  margin-bottom: 0;
+  padding: 16px 18px;
+}
+#view-settings .settings-pane.active {
+  display: block;
+}
+#view-settings .settings-pane[hidden] {
+  display: none !important;
+}
+#view-settings .settings-pane .sub-heading {
+  margin-top: 0;
+}
+#view-settings .settings-pane > .hint:first-of-type {
+  margin-top: -2px;
+}
+
+/* 通用页内短标签（API / AI托管 / 互动 / 日志 / 弹窗） */
+.sub-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface2);
+}
+.sub-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.84rem;
+  padding: 8px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.sub-tab:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+.sub-tab.active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border);
+  font-weight: 600;
+}
+.sub-pane {
+  display: none;
+}
+.sub-pane.active {
+  display: block;
+}
+.sub-pane[hidden] {
+  display: none !important;
+}
+.panel.sub-pane {
+  margin-bottom: 0;
+  padding: 16px 18px;
+}
+.panel.sub-pane .api-manage-title,
+.panel.sub-pane .sub-heading,
+.ai-host-pane-title {
+  margin-top: 0;
+}
+.modal .sub-tabs {
+  margin-bottom: 12px;
+}
+.modal-sub-pane {
+  display: none;
+}
+.modal-sub-pane.active {
+  display: block;
+}
+.modal-sub-pane[hidden] {
+  display: none !important;
+}
+
+.cache-section {
+  margin-top: 12px;
+}
+.cache-section-title {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.cache-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cache-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+}
+.cache-item.protected {
+  grid-template-columns: 1fr auto;
+}
+.cache-item input[type="checkbox"] {
+  margin-top: 3px;
+}
+.cache-item-main strong {
+  display: block;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+.cache-item-main span {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.cache-item-meta {
+  text-align: right;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+.cache-item-meta em {
+  display: block;
+  font-style: normal;
+  color: var(--text);
+  font-weight: 600;
+}
 .inline-toggle {
   display: flex;
   align-items: center;
@@ -1676,7 +1917,7 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   align-items: center;
   justify-content: space-between;
   gap: 10px 12px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   margin-bottom: 8px;
 }
 
@@ -1684,6 +1925,30 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   font-size: 0.95rem;
   margin: 0;
   white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.host-metrics-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0 8px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.host-metrics-status.ok {
+  color: var(--success);
+}
+.host-metrics-status.err {
+  color: var(--error);
+}
+.host-metrics-status.info {
+  color: var(--accent);
 }
 
 .ai-hosted-head-actions {
@@ -1691,7 +1956,8 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
+  margin-left: 0;
+  flex: 0 0 auto;
 }
 
 .ai-hosted-search {
@@ -1707,6 +1973,16 @@ h1 { font-size: 1.35rem; font-weight: 600; }
 }
 
 @media (max-width: 720px) {
+  .ai-hosted-head {
+    flex-wrap: wrap;
+  }
+  .host-metrics-status {
+    order: 3;
+    flex: 1 1 100%;
+    text-align: left;
+    padding: 0;
+    white-space: normal;
+  }
   .ai-hosted-head-actions {
     width: 100%;
     flex-wrap: wrap;
