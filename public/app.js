@@ -1527,6 +1527,18 @@ function shortenVpnNodeName(name, maxLen = 12) {
   return `${chars.slice(0, Math.max(1, maxLen - 1)).join("")}…`;
 }
 
+/** 侧栏展示用：去掉 2x/0.5x 等流量倍率前缀，避免窄栏里看起来像乱码 */
+function displayVpnNodeName(name, maxLen = 12) {
+  let text = String(name || "").trim();
+  if (!text) return "";
+  text = text
+    .replace(/^\d+(\.\d+)?\s*[xX×]\s*/u, "")
+    .replace(/^[xX×]\s*\d+(\.\d+)?\s*/u, "")
+    .replace(/^【\d+(\.\d+)?\s*[xX×]】\s*/u, "")
+    .trim();
+  return shortenVpnNodeName(text || name, maxLen);
+}
+
 function renderVpnSignalWidget({
   ok,
   latencyMs,
@@ -1565,7 +1577,7 @@ function renderVpnSignalWidget({
     textEl.textContent = `${Math.round(latencyMs)}ms`;
     if (kindEl) {
       if (fromClash && nodeName) {
-        kindEl.textContent = shortenVpnNodeName(nodeName, 10);
+        kindEl.textContent = displayVpnNodeName(nodeName, 12);
       } else {
         kindEl.textContent = kindLabel || (fromClash ? "节点测速" : "出网测速");
       }

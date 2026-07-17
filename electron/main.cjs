@@ -28,6 +28,7 @@ function migrateInstallDataIfNeeded(targetDir) {
   if (!legacyDir || legacyDir === targetDir || !fs.existsSync(legacyDir)) return;
 
   const marker = path.join(targetDir, ".migrated-from-install-dir");
+  // 首次仍尽量把安装目录整份拷过去；之后由服务端 config-migrate 做智能合并
   if (fs.existsSync(marker)) return;
 
   try {
@@ -72,6 +73,9 @@ function resolveStartupDataDir() {
 }
 
 function buildRuntimeEnv() {
+  const legacyInstallDir = getLegacyInstallDataDir();
+  const legacyHomeDir = path.join(app.getPath("home"), ".config", "binance-square");
+  const legacyDirs = [legacyInstallDir, legacyHomeDir].filter(Boolean);
   const env = {
     ...process.env,
     PORT: String(PORT),
@@ -79,7 +83,9 @@ function buildRuntimeEnv() {
     BINANCE_SQUARE_DESKTOP: "1",
     BINANCE_SQUARE_BOOTSTRAP_DIR: getBootstrapDir(),
     BINANCE_SQUARE_DEFAULT_DATA_DIR: getDefaultDataDir(),
+    BINANCE_SQUARE_LEGACY_DATA_DIRS: legacyDirs.join(path.delimiter),
   };
+  if (legacyInstallDir) env.BINANCE_SQUARE_INSTALL_DATA_DIR = legacyInstallDir;
   const dataDir = resolveStartupDataDir();
   if (dataDir) {
     migrateInstallDataIfNeeded(dataDir);

@@ -402,7 +402,7 @@ a { color: var(--accent); }
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 9px 10px;
+  padding: 9px 12px 9px 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface2);
@@ -410,6 +410,7 @@ a { color: var(--accent); }
   cursor: pointer;
   text-align: left;
   transition: border-color 0.15s, background 0.15s;
+  min-width: 0;
 }
 
 .vpn-signal-widget:hover {
@@ -470,7 +471,8 @@ a { color: var(--accent); }
 
 .vpn-signal-kind {
   margin-left: auto;
-  max-width: 46%;
+  max-width: 52%;
+  min-width: 0;
   font-size: 0.72rem;
   line-height: 1.2;
   color: var(--text-muted);
@@ -478,6 +480,7 @@ a { color: var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: right;
+  padding-right: 1px;
 }
 
 .theme-toggle-btn {
