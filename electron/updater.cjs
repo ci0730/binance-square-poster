@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const CHECK_DELAY_MS = 4000;
-const DEFAULT_RELEASE_NOTES = "稳定性与使用体验改进";
+const DEFAULT_RELEASE_NOTES = "第一版";
 
 let mainWindowGetter = () => null;
 let pendingUpdateInfo = null;

@@ -7,11 +7,7 @@ import {
   getProxyCircuitState,
   resetProxyCircuit,
 } from "../lib/proxy-circuit.js";
-import { canUseFallbackProxy } from "../lib/proxy-health.js";
-import {
-  findClashSwitchableSelector,
-  pickClashFailoverCandidates,
-} from "../lib/proxy-probe.js";
+import { canUseFallbackProxy, isProxyLatencyHealthy } from "../lib/proxy-health.js";
 
 test("proxy circuit opens after consecutive failures and blocks publish preflight", () => {
   const key = "socks5://127.0.0.1:17997";
@@ -34,40 +30,9 @@ test("canUseFallbackProxy only when URLs differ", () => {
   assert.equal(canUseFallbackProxy("socks5://a:1", ""), false);
 });
 
-test("findClashSwitchableSelector prefers 节点选择 Selector over URLTest", () => {
-  const proxies = {
-    GLOBAL: { type: "Selector", now: "节点选择", all: ["节点选择", "DIRECT"] },
-    节点选择: {
-      type: "Selector",
-      now: "专线-新加坡-1",
-      all: ["专线-新加坡-1", "专线-香港-2", "自动选择", "DIRECT"],
-    },
-    自动选择: {
-      type: "URLTest",
-      now: "专线-日本-3",
-      all: ["专线-日本-3", "专线-美国-4"],
-    },
-    "专线-新加坡-1": { type: "Shadowsocks" },
-    "专线-香港-2": { type: "Shadowsocks" },
-    "专线-日本-3": { type: "Shadowsocks" },
-    "专线-美国-4": { type: "Shadowsocks" },
-    DIRECT: { type: "Direct" },
-  };
-  const selector = findClashSwitchableSelector(proxies);
-  assert.equal(selector?.group, "节点选择");
-  assert.equal(selector?.current, "专线-新加坡-1");
-  const candidates = pickClashFailoverCandidates(selector);
-  assert.deepEqual(candidates, ["专线-香港-2"]);
-  assert.ok(!candidates.includes("自动选择"));
-  assert.ok(!candidates.includes("DIRECT"));
-  assert.ok(!candidates.includes("专线-新加坡-1"));
-});
-
-test("pickClashFailoverCandidates respects excludeNames", () => {
-  const selector = {
-    group: "PROXY",
-    current: "A",
-    all: ["A", "B", "C"],
-  };
-  assert.deepEqual(pickClashFailoverCandidates(selector, { excludeNames: ["B"] }), ["C"]);
+test("isProxyLatencyHealthy allows soft-continue when Clash delay looks fine", () => {
+  assert.equal(isProxyLatencyHealthy({ ok: true, latencyMs: 199 }), true);
+  assert.equal(isProxyLatencyHealthy({ ok: true, latencyMs: 0 }), false);
+  assert.equal(isProxyLatencyHealthy({ ok: false, latencyMs: 199 }), false);
+  assert.equal(isProxyLatencyHealthy(null), false);
 });

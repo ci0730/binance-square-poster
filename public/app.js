@@ -3249,11 +3249,18 @@ function formatUpdateBytes(bytes) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatAppVersionLabel(version) {
+  const v = String(version || "").trim();
+  if (!v) return "";
+  if (v === "1.0.0") return "第一版";
+  return `v${v}`;
+}
+
 function renderAppVersionText() {
   const el = $("#appVersionText");
   if (!el) return;
   el.textContent = desktopUpdateState.currentVersion
-    ? `当前版本：v${desktopUpdateState.currentVersion}`
+    ? `当前版本：${formatAppVersionLabel(desktopUpdateState.currentVersion)}`
     : "当前版本：未知";
 }
 
@@ -3280,17 +3287,22 @@ function openUpdateModal(info = {}) {
   const version = info.version || desktopUpdateState.availableVersion || "";
   desktopUpdateState.availableVersion = version;
   if ($("#updateModalTitle")) {
-    $("#updateModalTitle").textContent = version ? `发现新版本 v${version}` : "发现新版本";
+    $("#updateModalTitle").textContent = version
+      ? `发现新版本 ${formatAppVersionLabel(version)}`
+      : "发现新版本";
   }
   if ($("#updateModalVersion")) {
-    const current = desktopUpdateState.currentVersion ? `v${desktopUpdateState.currentVersion}` : "当前版本";
+    const current = desktopUpdateState.currentVersion
+      ? formatAppVersionLabel(desktopUpdateState.currentVersion)
+      : "当前版本";
     $("#updateModalVersion").textContent = version
-      ? `${current} → v${version}`
+      ? `${current} → ${formatAppVersionLabel(version)}`
       : "有新版本可供安装";
   }
   const notesEl = $("#updateModalNotes");
   if (notesEl) {
-    notesEl.textContent = "修复部分BUG";
+    const notes = String(info.releaseNotes || "").trim() || "第一版";
+    notesEl.textContent = notes;
     notesEl.classList.remove("hidden");
   }
   $("#updateProgressWrap")?.classList.add("hidden");
@@ -3322,7 +3334,10 @@ function showUpdateDownloaded(info = {}) {
   $("#btnUpdateDownload")?.classList.add("hidden");
   $("#btnUpdateLater")?.classList.add("hidden");
   $("#btnUpdateInstall")?.classList.remove("hidden");
-  setUpdateModalMessage(`v${version || "新版本"} 已下载完成，重启后将自动安装。`, "ok");
+  setUpdateModalMessage(
+    `${formatAppVersionLabel(version || "新版本")} 已下载完成，重启后将自动安装。`,
+    "ok",
+  );
   if (!$("#updateModal")?.open) openAppModal("updateModal");
   showUpdateSettingsMessage("更新包已下载，可点击「重启并安装」", "ok");
 }
@@ -3354,7 +3369,10 @@ function handleDesktopUpdateStatus(payload = {}) {
   }
   if (phase === "available") {
     desktopUpdateState.availableVersion = payload.info?.version || "";
-    showUpdateSettingsMessage(`发现新版本 v${desktopUpdateState.availableVersion}`, "ok");
+    showUpdateSettingsMessage(
+      `发现新版本 ${formatAppVersionLabel(desktopUpdateState.availableVersion)}`,
+      "ok",
+    );
     if (manualUpdateCheckPending || shouldPromptForUpdate(desktopUpdateState.availableVersion)) {
       openUpdateModal(payload.info || {});
     }

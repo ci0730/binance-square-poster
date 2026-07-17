@@ -2602,7 +2602,7 @@ h1 { font-size: 1.35rem; font-weight: 600; }
 }
 
 .ai-host-api-hint {
-  margin: 0 0 0 auto;
+  margin: 0 0 10px;
   font-size: 0.78rem;
 }
 
@@ -2618,7 +2618,6 @@ h1 { font-size: 1.35rem; font-weight: 600; }
   margin: 8px 0 0;
 }
 
-#view-ai-host.is-hosting-locked .ai-host-top-bar,
 #view-ai-host.is-hosting-locked .ai-host-control-card .ai-host-schedule-row,
 #view-ai-host.is-hosting-locked .ai-host-control-card .ai-host-option-row,
 #view-ai-host.is-hosting-locked .ai-hosted-section {

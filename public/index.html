@@ -499,35 +499,25 @@
         </div>
 
         <div class="panel sub-pane active" data-subpane="control" role="tabpanel">
-          <div class="ai-host-top-bar">
-            <div class="ai-host-top-toggles">
-              <label class="field inline-toggle compact-toggle">
-                <input type="checkbox" id="aiEnabled" />
-                <span>启用 AI 自动托管</span>
-              </label>
-              <label class="field inline-toggle compact-toggle">
-                <input type="checkbox" id="aiUseNews" checked />
-                <span>结合最新资讯/行情</span>
-              </label>
-              <span class="hint ai-host-api-hint">AI Key / 模型请到「API 管理」配置</span>
+          <!-- 托管开关由「开启并立即托管 / 取消托管」控制；保留隐藏 checkbox 供现有逻辑同步 -->
+          <div class="hidden" aria-hidden="true">
+            <input type="checkbox" id="aiEnabled" />
+            <a id="aiKeyHelpLink" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
+            <p id="aiIntroHint"></p>
+            <select id="aiProviderSelect" class="account-select"></select>
+            <div id="aiBaseUrlWrap" class="hidden">
+              <input type="text" id="aiBaseUrlInput" autocomplete="off" />
             </div>
-            <!-- 保留隐藏字段，便于现有逻辑读取默认 AI 配置，界面不再重复展示 -->
-            <div class="hidden" aria-hidden="true">
-              <a id="aiKeyHelpLink" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener">获取 API Key</a>
-              <p id="aiIntroHint"></p>
-              <select id="aiProviderSelect" class="account-select"></select>
-              <div id="aiBaseUrlWrap" class="hidden">
-                <input type="text" id="aiBaseUrlInput" autocomplete="off" />
-              </div>
-              <input type="password" id="aiApiKeyInput" autocomplete="off" />
-              <div id="aiModelSelectWrap">
-                <select id="aiModelSelect" class="account-select"></select>
-              </div>
-              <div id="aiCustomModelWrap" class="hidden">
-                <input type="text" id="aiCustomModelInput" autocomplete="off" />
-              </div>
+            <input type="password" id="aiApiKeyInput" autocomplete="off" />
+            <div id="aiModelSelectWrap">
+              <select id="aiModelSelect" class="account-select"></select>
+            </div>
+            <div id="aiCustomModelWrap" class="hidden">
+              <input type="text" id="aiCustomModelInput" autocomplete="off" />
             </div>
           </div>
+
+          <p class="hint ai-host-api-hint">AI Key / 模型请到「API 管理」配置</p>
 
           <div class="ai-host-control-card">
             <div class="form-row ai-host-schedule-row">
@@ -571,6 +561,10 @@
               <label class="ai-host-chip-toggle">
                 <input type="checkbox" id="aiPreventDuplicate" checked />
                 <span>避免重复发帖</span>
+              </label>
+              <label class="ai-host-chip-toggle" title="写稿时结合最新资讯与行情">
+                <input type="checkbox" id="aiUseNews" checked />
+                <span>结合最新资讯/行情</span>
               </label>
             </div>
             <div class="form-row ai-host-action-row">
