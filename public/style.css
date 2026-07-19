@@ -1946,6 +1946,12 @@ h1 { font-size: 1.35rem; font-weight: 600; }
 }
 .host-metrics-status.err {
   color: var(--error);
+  white-space: normal;
+  overflow-x: hidden;
+  overflow-y: auto;
+  text-overflow: unset;
+  text-align: left;
+  max-height: 4.2em;
 }
 .host-metrics-status.info {
   color: var(--accent);
@@ -2627,7 +2633,7 @@ h1 { font-size: 1.35rem; font-weight: 600; }
 #view-ai-host.is-hosting-locked input:not(#aiHostedSearchInput),
 #view-ai-host.is-hosting-locked select,
 #view-ai-host.is-hosting-locked textarea,
-#view-ai-host.is-hosting-locked button:not(#btnAiCancelHosting):not(#btnAiRunNow) {
+#view-ai-host.is-hosting-locked button:not(#btnAiCancelHosting):not(#btnAiRunNow):not(#btnHostRefreshMetrics) {
   pointer-events: none;
   cursor: not-allowed;
 }

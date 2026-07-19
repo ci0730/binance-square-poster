@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -98,7 +98,7 @@
       }
     ],
     "releaseInfo": {
-      "releaseNotes": "v1.0.12\n\n- 修复 AI 连接测试成功后切页又显示失败\n- 修复托管已关闭仍显示历史错误\n- 连接探测与托管运行状态分离"
+      "releaseNotes": "v1.0.13\n\n- 修复代理拉取互动失败（HTTPS 隧道 TLS）\n- 取消托管可立刻打断 AI 请求\n- 空轮次不再误报最近错误\n- 互动失败详情写入系统日志并可完整显示"
     }
   }
 }

@@ -1073,14 +1073,27 @@ const server = http.createServer(async (req, res) => {
       }
 
       const okCount = accounts.filter((item) => item?.ok).length;
+      const failAccounts = accounts.filter((item) => !item?.ok);
       const elapsedMs = Date.now() - startedAt;
       const viaGlobal = !useAccountProxy;
+      const summary =
+        okCount > 0
+          ? `已为 ${okCount}/${accounts.length} 个账号刷新互动${viaGlobal ? "（经全局代理）" : ""}，耗时 ${Math.round(elapsedMs / 1000)}s`
+          : `未能刷新互动数据（${accounts.length} 个账号，耗时 ${Math.round(elapsedMs / 1000)}s）`;
+      if (failAccounts.length) {
+        const detail = failAccounts
+          .map((item) => `「${item.accountName || item.accountId}」${item.error || "失败"}`)
+          .join("；");
+        appendSystemLog(`${summary}；未成功 ${failAccounts.length} 个：${detail}`, {
+          type: okCount > 0 ? "info" : "err",
+          source: "metrics",
+        });
+      } else {
+        appendSystemLog(summary, { type: "ok", source: "metrics" });
+      }
       json(res, 200, {
         ok: okCount > 0,
-        message:
-          okCount > 0
-            ? `已为 ${okCount}/${accounts.length} 个账号刷新互动${viaGlobal ? "（经全局代理）" : ""}，耗时 ${Math.round(elapsedMs / 1000)}s`
-            : `未能刷新互动数据（${accounts.length} 个账号，耗时 ${Math.round(elapsedMs / 1000)}s）`,
+        message: summary,
         elapsedMs,
         deadlineMs,
         useAccountProxy,

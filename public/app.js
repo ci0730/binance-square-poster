@@ -4446,22 +4446,22 @@ async function refreshHostedAccountMetrics() {
     const failList = (data.accounts || []).filter((item) => !item.ok);
     let msg = data.message || `已刷新 ${okList.length} 个账号`;
     if (failList.length) {
-      const brief = failList
-        .slice(0, 3)
+      const detail = failList
         .map((item) => `「${item.accountName || getAccountName(item.accountId)}」${item.error || "失败"}`)
         .join("；");
-      msg += `；${failList.length} 个未成功：${brief}${failList.length > 3 ? "…" : ""}`;
+      msg += `；${failList.length} 个未成功：${detail}`;
     }
-    showHostMetricsStatus(msg, failList.length && !okList.length ? "err" : failList.length ? "info" : "ok");
+    const statusType = failList.length && !okList.length ? "err" : failList.length ? "info" : "ok";
+    showHostMetricsStatus(msg, statusType);
+    // 服务端已写入系统日志；立刻拉取，避免等轮询
+    pollServerSystemLogs();
   } catch (err) {
-    if (err?.name === "AbortError") {
-      showHostMetricsStatus(
-        "获取互动仍超时。请完全退出软件（含托盘）再打开；并确认「设置」里全局代理可用",
-        "err",
-      );
-    } else {
-      showHostMetricsStatus(err.message || "获取互动失败", "err");
-    }
+    const errMsg =
+      err?.name === "AbortError"
+        ? "获取互动仍超时。请完全退出软件（含托盘）再打开；并确认「设置」里全局代理可用"
+        : err.message || "获取互动失败";
+    showHostMetricsStatus(errMsg, "err");
+    appendSystemLog(`获取互动失败：${errMsg}`, "err");
   } finally {
     clearInterval(tick);
     clearTimeout(watchdog);
