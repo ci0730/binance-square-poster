@@ -57,6 +57,7 @@ import {
   readAiSettings,
   getRecentTokenPairs,
   markRunStarted,
+  recordAiConnectionTest,
 } from "./lib/ai-settings.js";
 import { listAiProvidersPublic } from "./lib/ai-providers.js";
 import { generateSquarePost, testAiApiKey } from "./lib/ai-generator.js";
@@ -1186,23 +1187,35 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/ai/test" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
       const autoMatch = body.autoMatch !== false;
-      const creds = resolveAiCredentials({
-        profileId: body.aiProfileId,
-        overrides: {
-          apiKey: body.apiKey,
-          provider: body.provider,
-          baseUrl: body.baseUrl,
-          model: body.model,
-        },
-        allowEmptyModel: autoMatch,
-      });
-      const result = await testAiApiKey(creds.apiKey, {
-        provider: creds.provider,
-        model: creds.model,
-        baseUrl: creds.baseUrl,
-        autoMatch,
-      });
-      json(res, 200, result);
+      let profileId = body.aiProfileId || null;
+      try {
+        const creds = resolveAiCredentials({
+          profileId: body.aiProfileId,
+          overrides: {
+            apiKey: body.apiKey,
+            provider: body.provider,
+            baseUrl: body.baseUrl,
+            model: body.model,
+          },
+          allowEmptyModel: autoMatch,
+        });
+        profileId = creds.aiProfileId || body.aiProfileId || null;
+        const result = await testAiApiKey(creds.apiKey, {
+          provider: creds.provider,
+          model: creds.model,
+          baseUrl: creds.baseUrl,
+          autoMatch,
+        });
+        recordAiConnectionTest({ ok: true, profileId });
+        json(res, 200, result);
+      } catch (err) {
+        recordAiConnectionTest({
+          ok: false,
+          error: toChineseError(err) || err?.message || "连接失败",
+          profileId,
+        });
+        throw err;
+      }
       return;
     }
 

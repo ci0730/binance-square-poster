@@ -4104,12 +4104,14 @@ async function testAiProfileFromModal() {
     const data = await res.json();
     if (!res.ok) {
       showAiProfileModalMessage(data.error || "测试失败", "err");
+      await refreshApiAiManagePanel();
       return;
     }
     const matched = data.matchedModel || data.model || profile.model;
     applyMatchedAiModelToUi(matched, { profileModal: true });
     const switchHint = data.autoSwitched ? `（已自动切换为 ${matched}）` : "";
     showAiProfileModalMessage(`${data.message}${switchHint}：${data.preview || ""}`, "ok");
+    await refreshApiAiManagePanel();
   } catch {
     showAiProfileModalMessage("无法连接本地服务", "err");
   }
@@ -4131,6 +4133,7 @@ async function testAiProfileById(profileId) {
     const data = await res.json();
     if (!res.ok) {
       showApiAiManageMessage(data.error || "测试失败", "err");
+      await refreshApiAiManagePanel();
       return;
     }
     if (data.autoSwitched && data.matchedModel) {
@@ -4148,11 +4151,7 @@ async function testAiProfileById(profileId) {
     } else {
       showApiAiManageMessage(`${profile.name}：${data.message}`, "ok");
     }
-    const statusEl = $("#apiAiStatusText");
-    if (statusEl) {
-      statusEl.textContent = "连接成功";
-      statusEl.style.color = "var(--success)";
-    }
+    await refreshApiAiManagePanel();
   } catch {
     showApiAiManageMessage("无法连接本地服务", "err");
   }
@@ -4211,15 +4210,18 @@ function updateApiAiStatusCard(data) {
     $("#apiAiHostedCount").textContent = `${enabled} 个`;
   }
   if (statusEl) {
-    if (data.lastError && data.hasApiKey) {
-      statusEl.textContent = "最近失败";
-      statusEl.style.color = "var(--error)";
-    } else if (data.hasApiKey) {
-      statusEl.textContent = data.lastSuccessAt ? "已配置" : "待测试";
-      statusEl.style.color = data.lastSuccessAt ? "var(--success)" : "var(--accent)";
-    } else {
+    if (!data.hasApiKey) {
       statusEl.textContent = "未配置";
       statusEl.style.color = "var(--text-muted)";
+    } else if (data.lastConnectionTestOk === true) {
+      statusEl.textContent = "连接成功";
+      statusEl.style.color = "var(--success)";
+    } else if (data.lastConnectionTestOk === false) {
+      statusEl.textContent = "最近失败";
+      statusEl.style.color = "var(--error)";
+    } else {
+      statusEl.textContent = "待测试";
+      statusEl.style.color = "var(--accent)";
     }
   }
 }
@@ -5788,14 +5790,16 @@ function renderAiStatus(data) {
     const nextLabel = data.nextRunAt <= Date.now() ? "即将自动发帖" : formatTime(data.nextRunAt);
     parts.push(`下次发帖: ${nextLabel}`);
   }
-  if (data.lastError) parts.push(`最近错误: ${data.lastError}`);
+  // 仅在托管开启时展示最近错误；已关闭时不把历史失败当当前故障
+  const showLastError = Boolean(data.enabled && data.lastError);
+  if (showLastError) parts.push(`最近错误: ${data.lastError}`);
   el.textContent = parts.filter(Boolean).join(" · ");
   // 有成功发布记录时，残留错误用警告色，避免整栏一直血红
   const softWarn =
-    Boolean(data.lastError) &&
+    showLastError &&
     Boolean(data.lastSuccessAt) &&
     Number(data.todayPublished || 0) > 0;
-  el.className = data.lastError ? (softWarn ? "message warn" : "message err") : "message info";
+  el.className = showLastError ? (softWarn ? "message warn" : "message err") : "message info";
 
   if (hint) {
     if (data.enabled && data.hasApiKey) {
@@ -6235,12 +6239,14 @@ async function testAiApi() {
     const data = await res.json();
     if (!res.ok) {
       showAiSettingsMessage(data.error || "测试失败", "err");
+      await refreshApiAiManagePanel();
       return;
     }
     const matched = data.matchedModel || data.model || config.model;
     applyMatchedAiModelToUi(matched, { profileModal: false });
     const switchHint = data.autoSwitched ? `（已自动切换为 ${matched}）` : "";
     showAiSettingsMessage(`${data.message}${switchHint}：${data.preview || ""}`, "ok");
+    await refreshApiAiManagePanel();
   } catch {
     showAiSettingsMessage("无法连接本地服务", "err");
   }
