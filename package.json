@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -98,7 +98,7 @@
       }
     ],
     "releaseInfo": {
-      "releaseNotes": "v1.0.13\n\n- 修复代理拉取互动失败（HTTPS 隧道 TLS）\n- 取消托管可立刻打断 AI 请求\n- 空轮次不再误报最近错误\n- 互动失败详情写入系统日志并可完整显示"
+      "releaseNotes": "v1.0.14\n\n- 运行间隔支持 min～max 分钟随机\n- 「每次条数」立即发帖生效；并行数只控制同时路数\n- 取消托管可立刻打断发帖核对，不再干等\n- 本轮账号进度面板；系统日志最新在上并铺满显示\n- 网络错误不再误标为「取消」"
     }
   }
 }

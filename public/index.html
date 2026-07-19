@@ -521,12 +521,14 @@
 
           <div class="ai-host-control-card">
             <div class="form-row ai-host-schedule-row">
-              <label class="inline-label">
+              <label class="inline-label" title="每轮结束后在区间内随机等待，再跑下一轮">
                 运行间隔
-                <input type="number" id="aiIntervalInput" value="60" min="5" max="1440" />
+                <input type="number" id="aiIntervalMinInput" value="30" min="5" max="1440" />
+                ～
+                <input type="number" id="aiIntervalMaxInput" value="60" min="5" max="1440" />
                 分钟
               </label>
-              <label class="inline-label">
+              <label class="inline-label" title="每个账号每轮各发这么多条（不是全账号合计）">
                 每次条数
                 <input type="number" id="aiPostsPerRunInput" value="1" min="1" max="5" />
                 条
@@ -536,7 +538,7 @@
                 <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
                 条
               </label>
-              <label class="inline-label" title="多账号同时写稿/发帖的路数，建议 2–5">
+              <label class="inline-label" title="同时写稿/发帖的路数。设为 1 则账号逐个排队，本轮仍会跑完所有启用账号">
                 并行账号数
                 <input type="number" id="aiHostConcurrencyInput" value="3" min="1" max="8" />
                 路
@@ -575,6 +577,13 @@
             <p id="aiHostingHint" class="message info hidden"></p>
             <p id="aiStatusText" class="message info">尚未配置 AI 托管</p>
             <p id="aiMessage" class="message"></p>
+            <div id="aiRunAccountsPanel" class="ai-run-accounts-panel hidden" aria-live="polite">
+              <div class="ai-run-accounts-head">
+                <strong class="ai-run-accounts-title">本轮账号</strong>
+                <span id="aiRunAccountsSummary" class="ai-run-accounts-summary"></span>
+              </div>
+              <div id="aiRunAccountsBody" class="ai-run-accounts-body"></div>
+            </div>
           </div>
         </div>
 
@@ -807,7 +816,7 @@
           <p id="progressText" class="progress-text">暂无进行中的任务</p>
           <div id="progressLog" class="progress-log"></div>
         </section>
-        <div class="panel sub-pane" data-subpane="system" role="tabpanel" hidden>
+        <div class="panel sub-pane system-log-pane" data-subpane="system" role="tabpanel" hidden>
           <div class="log-toolbar">
             <h3 class="sub-heading">系统日志</h3>
             <button class="btn btn-ghost btn-sm" id="btnClearSystemLog">清空日志</button>

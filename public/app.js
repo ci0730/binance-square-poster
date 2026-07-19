@@ -561,6 +561,7 @@ function switchView(view) {
   if (view === "ai-host") {
     restoreSubTab("ai-host");
     loadAiConfig();
+    pollAiRunProgressPanel();
   }
   if (view === "tokens") loadTokenRegistry();
   else stopTokenQuotesAutoRefresh();
@@ -736,33 +737,40 @@ function appendSystemLog(msg, type = "info") {
   el.className = `log-line ${type}`;
   const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
   el.textContent = `[${stamp}] ${msg}`;
-  box.appendChild(el);
-  box.scrollTop = box.scrollHeight;
+  box.insertBefore(el, box.firstChild);
+  box.scrollTop = 0;
 }
 
 let systemLogSinceId = 0;
 let systemLogPolling = false;
 
+function prependSystemLogRow(row) {
+  const box = $("#systemLog");
+  if (!box) return;
+  const type = row.type === "err" || row.type === "error" ? "err" : row.type === "ok" ? "ok" : "info";
+  const stamp = new Date(row.time || Date.now()).toLocaleTimeString("zh-CN", { hour12: false });
+  const el = document.createElement("div");
+  el.className = `log-line ${type}`;
+  el.textContent = `[${stamp}] ${row.message}`;
+  box.insertBefore(el, box.firstChild);
+}
+
 async function pollServerSystemLogs() {
   if (systemLogPolling) return;
   systemLogPolling = true;
   try {
-    const res = await fetch(`/api/system-log?sinceId=${systemLogSinceId}&limit=100`);
+    const res = await fetch(`/api/system-log?sinceId=${systemLogSinceId}&limit=${systemLogSinceId ? 100 : 500}`);
     if (!res.ok) return;
     const data = await res.json();
     const rows = data.logs || [];
+    if (!rows.length) return;
+    // 服务端按 id 升序；从前到后 insertBefore，最终最新在最上方
     for (const row of rows) {
       systemLogSinceId = Math.max(systemLogSinceId, row.id || 0);
-      const type = row.type === "err" || row.type === "error" ? "err" : row.type === "ok" ? "ok" : "info";
-      const stamp = new Date(row.time || Date.now()).toLocaleTimeString("zh-CN", { hour12: false });
-      const box = $("#systemLog");
-      if (!box) continue;
-      const el = document.createElement("div");
-      el.className = `log-line ${type}`;
-      el.textContent = `[${stamp}] ${row.message}`;
-      box.appendChild(el);
-      box.scrollTop = box.scrollHeight;
+      prependSystemLogRow(row);
     }
+    const box = $("#systemLog");
+    if (box) box.scrollTop = 0;
   } catch {
     // ignore poll errors
   } finally {
@@ -1576,6 +1584,11 @@ async function init() {
   renderAlerts();
   if (loadMonitorSettings().autoRefreshEnabled) startAutoRefresh();
   setInterval(refreshAiRuntimeStatus, 30000);
+  setInterval(() => {
+    if (activeView === "ai-host" && (aiRunning || $("#aiEnabled")?.checked)) {
+      pollAiRunProgressPanel();
+    }
+  }, 1500);
   setInterval(pollServerSystemLogs, 5000);
   pollServerSystemLogs();
   startVpnSignalMonitor();
@@ -1599,6 +1612,9 @@ async function refreshAiRuntimeStatus() {
       }
     }
     renderAiStatus(data);
+    if (data.runActive || aiRunning) {
+      pollAiRunProgressPanel();
+    }
     // 同步各账号「今日」额度到托管列表，避免发帖后表格仍显示旧值
     if (Array.isArray(data.hostedAccounts) && aiHostedAccountsCache.length) {
       const byId = new Map(data.hostedAccounts.map((item) => [item.accountId, item]));
@@ -4284,7 +4300,14 @@ async function applyAiConfigToUI(data) {
   }
 
   if ($("#aiEnabled")) $("#aiEnabled").checked = Boolean(data.enabled);
-  if ($("#aiIntervalInput")) $("#aiIntervalInput").value = data.intervalMinutes || 60;
+  if ($("#aiIntervalMinInput")) {
+    $("#aiIntervalMinInput").value =
+      data.intervalMinMinutes ?? data.intervalMinutes ?? 60;
+  }
+  if ($("#aiIntervalMaxInput")) {
+    $("#aiIntervalMaxInput").value =
+      data.intervalMaxMinutes ?? data.intervalMinutes ?? 60;
+  }
   if ($("#aiPostsPerRunInput")) $("#aiPostsPerRunInput").value = data.postsPerRun || 1;
   if ($("#aiMaxPerDayInput")) $("#aiMaxPerDayInput").value = data.maxPostsPerDay || 10;
   if ($("#aiHostConcurrencyInput")) {
@@ -5647,6 +5670,10 @@ function collectContentStylesFromUI() {
   return [...$$('input[name="aiContentStyle"]:checked')].map((el) => el.value);
 }
 
+function getAiPostsPerRunFromUI() {
+  return Math.max(1, Math.min(parseInt($("#aiPostsPerRunInput")?.value, 10) || 1, 5));
+}
+
 function updateAiHostingButtons(data) {
   const btn = $("#btnAiRunNow");
   const draftBtn = $("#btnAiGenerateDraft");
@@ -5654,6 +5681,8 @@ function updateAiHostingButtons(data) {
   const on = Boolean(data?.enabled);
   const locked = aiRunning || on;
   const stopping = aiRunning && !on;
+  const postsPerRun = getAiPostsPerRunFromUI();
+  const runNowLabel = postsPerRun > 1 ? `立即发 ${postsPerRun} 条（可选）` : "立即发一条（可选）";
 
   if (cancelBtn) {
     cancelBtn.classList.toggle("hidden", !locked);
@@ -5687,14 +5716,14 @@ function updateAiHostingButtons(data) {
 
   btn.disabled = locked && on;
   if (on) {
-    btn.textContent = "立即发一条（可选）";
-    btn.title = "后台已自动托管。托管开启期间请先「取消托管」再改设置；此按钮可额外立即发一条";
+    btn.textContent = runNowLabel;
+    btn.title = `按「每次条数」为每个启用账号立即发 ${postsPerRun} 条；改设置请先取消托管`;
     btn.classList.remove("btn-accent");
     btn.classList.add("btn-secondary");
-    btn.disabled = false; // 仍允许立即发一条
+    btn.disabled = false; // 仍允许立即发帖
   } else {
     btn.textContent = "开启并立即托管";
-    btn.title = "开启自动托管并立即发布一条，之后将按间隔自动发帖";
+    btn.title = `开启自动托管并立即按「每次条数」发帖（每账号 ${postsPerRun} 条），之后按间隔自动发`;
     btn.classList.remove("btn-secondary");
     btn.classList.add("btn-accent");
   }
@@ -5815,6 +5844,139 @@ function renderAiStatus(data) {
   updateAiHostingButtons(data);
 }
 
+const AI_RUN_GROUP_META = {
+  running: { label: "进行中", order: 1, maxVisible: 8 },
+  failed: { label: "失败", order: 2, maxVisible: 2 },
+  success: { label: "成功", order: 3, maxVisible: 2 },
+  skipped: { label: "跳过", order: 4, maxVisible: 2 },
+  cancelled: { label: "取消", order: 5, maxVisible: 2 },
+  queued: { label: "排队", order: 6, maxVisible: 2 },
+};
+
+/** @type {Record<string, boolean>} */
+const aiRunGroupExpanded = {};
+
+function escapeAiRunText(value) {
+  return escapeHtml(String(value || ""));
+}
+
+function renderAiRunAccountChips(items, status, expanded) {
+  const meta = AI_RUN_GROUP_META[status] || AI_RUN_GROUP_META.queued;
+  const maxVisible = meta.maxVisible;
+  const list = expanded || items.length <= maxVisible ? items : items.slice(0, maxVisible);
+  const chips = list
+    .map((item) => {
+      const detail =
+        status === "failed"
+          ? item.error || item.detail || "失败"
+          : item.detail || "";
+      const detailHtml = detail
+        ? `<span class="ai-run-chip-detail"> · ${escapeAiRunText(detail)}</span>`
+        : "";
+      return `<span class="ai-run-chip is-${escapeAiRunText(status)}" title="${escapeAiRunText(
+        detail || item.name,
+      )}"><span class="ai-run-chip-name">${escapeAiRunText(item.name)}</span>${detailHtml}</span>`;
+    })
+    .join("");
+  let more = "";
+  if (items.length > maxVisible) {
+    const key = status;
+    if (expanded) {
+      more = `<button type="button" class="ai-run-more" data-ai-run-toggle="${key}">收起</button>`;
+    } else {
+      more = `<button type="button" class="ai-run-more" data-ai-run-toggle="${key}">等 ${items.length} 个 ▾</button>`;
+    }
+  }
+  return `${chips}${more}`;
+}
+
+function renderAiRunAccountsPanel(progress) {
+  const panel = $("#aiRunAccountsPanel");
+  const summaryEl = $("#aiRunAccountsSummary");
+  const body = $("#aiRunAccountsBody");
+  if (!panel || !body) return;
+
+  const accounts = Array.isArray(progress?.accounts) ? progress.accounts : [];
+  const summary = progress?.summary || {};
+  const finishedCount =
+    Number(summary.success || 0) +
+    Number(summary.failed || 0) +
+    Number(summary.skipped || 0) +
+    Number(summary.cancelled || 0);
+  const active =
+    accounts.length > 0 &&
+    ((progress?.stage && progress.stage !== "idle") ||
+      Number(summary.running || 0) > 0 ||
+      Number(summary.queued || 0) > 0 ||
+      finishedCount > 0);
+
+  if (!active) {
+    panel.classList.add("hidden");
+    body.innerHTML = "";
+    if (summaryEl) summaryEl.textContent = "";
+    return;
+  }
+
+  panel.classList.remove("hidden");
+  if (summaryEl) {
+    const parts = [
+      `共 ${summary.total || accounts.length}`,
+      Number(summary.running || 0) ? `进行中 ${summary.running}` : "",
+      Number(summary.success || 0) ? `成功 ${summary.success}` : "",
+      Number(summary.failed || 0) ? `失败 ${summary.failed}` : "",
+      Number(summary.skipped || 0) ? `跳过 ${summary.skipped}` : "",
+      Number(summary.cancelled || 0) ? `取消 ${summary.cancelled}` : "",
+      Number(summary.queued || 0) ? `排队 ${summary.queued}` : "",
+    ].filter(Boolean);
+    summaryEl.textContent = parts.join(" · ");
+  }
+
+  const grouped = {
+    running: [],
+    failed: [],
+    success: [],
+    skipped: [],
+    cancelled: [],
+    queued: [],
+  };
+  for (const item of accounts) {
+    const status = grouped[item.status] ? item.status : "queued";
+    grouped[status].push(item);
+  }
+
+  const rows = Object.keys(AI_RUN_GROUP_META)
+    .sort((a, b) => AI_RUN_GROUP_META[a].order - AI_RUN_GROUP_META[b].order)
+    .filter((status) => grouped[status].length)
+    .map((status) => {
+      const expanded = Boolean(aiRunGroupExpanded[status]);
+      return `<div class="ai-run-group">
+        <span class="ai-run-group-label is-${status}">${AI_RUN_GROUP_META[status].label} ${grouped[status].length}</span>
+        <div class="ai-run-group-names">${renderAiRunAccountChips(grouped[status], status, expanded)}</div>
+      </div>`;
+    })
+    .join("");
+
+  body.innerHTML = rows || `<div class="ai-run-group-names muted">等待账号进度…</div>`;
+  body.querySelectorAll("[data-ai-run-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.getAttribute("data-ai-run-toggle");
+      if (!key) return;
+      aiRunGroupExpanded[key] = !aiRunGroupExpanded[key];
+      renderAiRunAccountsPanel(progress);
+    });
+  });
+}
+
+async function pollAiRunProgressPanel() {
+  try {
+    const pr = await fetch("/api/ai/progress").then((r) => r.json());
+    renderAiRunAccountsPanel(pr);
+    return pr;
+  } catch {
+    return null;
+  }
+}
+
 async function loadAiConfig() {
   try {
     const res = await fetch("/api/ai/config");
@@ -5879,7 +6041,15 @@ function collectAiHostingSettingsFromUI() {
     out.hostedAccounts = hostedAccounts;
     out.accountId = firstEnabled?.accountId || getDefaultAccountId();
   }
-  if ($("#aiIntervalInput")) out.intervalMinutes = parseInt($("#aiIntervalInput").value, 10) || 60;
+  if ($("#aiIntervalMinInput")) {
+    out.intervalMinMinutes = Math.max(5, Math.min(parseInt($("#aiIntervalMinInput").value, 10) || 30, 1440));
+  }
+  if ($("#aiIntervalMaxInput")) {
+    out.intervalMaxMinutes = Math.max(
+      5,
+      Math.min(parseInt($("#aiIntervalMaxInput").value, 10) || out.intervalMinMinutes || 60, 1440),
+    );
+  }
   if ($("#aiPostsPerRunInput")) out.postsPerRun = parseInt($("#aiPostsPerRunInput").value, 10) || 1;
   if ($("#aiMaxPerDayInput")) out.maxPostsPerDay = parseInt($("#aiMaxPerDayInput").value, 10) || 10;
   if ($("#aiHostConcurrencyInput")) {
@@ -6197,7 +6367,8 @@ function bindHostSettingsAutosave() {
   const ids = [
     "aiEnabled",
     "aiUseNews",
-    "aiIntervalInput",
+    "aiIntervalMinInput",
+    "aiIntervalMaxInput",
     "aiPostsPerRunInput",
     "aiMaxPerDayInput",
     "aiHostConcurrencyInput",
@@ -6283,14 +6454,20 @@ async function onAiHostStartClick() {
     return;
   }
 
-  const intervalMinutes = Math.max(1, Math.min(Number($("#aiIntervalInput")?.value) || 60, 1440));
+  const intervalMin = Math.max(5, Math.min(Number($("#aiIntervalMinInput")?.value) || 30, 1440));
+  const intervalMax = Math.max(
+    intervalMin,
+    Math.min(Number($("#aiIntervalMaxInput")?.value) || intervalMin, 1440),
+  );
+  const intervalLabel =
+    intervalMin === intervalMax ? `${intervalMin}` : `${intervalMin}～${intervalMax}`;
   const choice = await appConfirm({
     title: "开启 AI 托管",
     html: `
       <p>是否立即按托管流程发布文章？</p>
       <p class="hint" style="margin-top:10px;line-height:1.55">
         <strong>立即发布</strong>：马上写稿并发帖，之后仍按间隔自动托管。<br>
-        <strong>稍后再发</strong>：先开启托管，约 <strong>${intervalMinutes}</strong> 分钟后再按流程自动发布。
+        <strong>稍后再发</strong>：先开启托管，约 <strong>${intervalLabel}</strong> 分钟后再按流程自动发布。
       </p>
     `,
     confirmText: "立即发布",
@@ -6303,11 +6480,11 @@ async function onAiHostStartClick() {
     await aiRun({ publish: true });
     return;
   }
-  await enableAiHostingDeferred(intervalMinutes);
+  await enableAiHostingDeferred(intervalLabel);
 }
 
 /** 开启托管但不立刻跑本轮：等「运行间隔」后再由调度器按流程发布 */
-async function enableAiHostingDeferred(intervalMinutes) {
+async function enableAiHostingDeferred(intervalLabel) {
   const config = collectAiConfigFromUI();
   const enabledCount = config.hostedAccounts.filter((item) => item.enabled).length;
   if (!enabledCount) {
@@ -6337,9 +6514,9 @@ async function enableAiHostingDeferred(intervalMinutes) {
   const nextLabel =
     saved.nextRunAt != null
       ? formatTime(saved.nextRunAt)
-      : `约 ${intervalMinutes} 分钟后`;
+      : `约 ${intervalLabel} 分钟后`;
   showAiMessage(
-    `自动托管已开启，将于 ${nextLabel} 按流程自动发布（运行间隔 ${intervalMinutes} 分钟）。需要马上发可再点「立即发一条」。`,
+    `自动托管已开启，将于 ${nextLabel} 按流程自动发布（运行间隔 ${intervalLabel} 分钟）。需要马上发可再点「立即发一条」。`,
     "ok",
   );
 }
@@ -6400,19 +6577,20 @@ async function aiRun({ publish = false } = {}) {
   const progressTimer = setInterval(async () => {
     if (runToken !== aiRunToken) return;
     try {
-      const pr = await fetch("/api/ai/progress").then((r) => r.json());
+      const pr = await pollAiRunProgressPanel();
       if (pr?.message) showAiMessage(pr.message, "info");
     } catch {
       // ignore
     }
   }, 1200);
+  pollAiRunProgressPanel();
   try {
     const res = await fetch("/api/ai/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         publish,
-        count: publish ? 1 : config.postsPerRun,
+        count: getAiPostsPerRunFromUI(),
         manual: true,
         allAccounts: true,
         // 不传全局 provider/model，让各账号自己的 AI Profile 生效
@@ -6459,8 +6637,13 @@ async function aiRun({ publish = false } = {}) {
 
     const baseMsg = data.message || `${actionText}完成`;
     if (publish && savedConfig?.enabled) {
+      const min = savedConfig.intervalMinMinutes ?? savedConfig.intervalMinutes ?? 60;
+      const max = savedConfig.intervalMaxMinutes ?? savedConfig.intervalMinutes ?? min;
+      const rangeLabel = min === max ? `${min}` : `${min}～${max}`;
+      const intervalHint =
+        min === max ? `每 ${rangeLabel} 分钟发帖` : `每 ${rangeLabel} 分钟随机间隔发帖`;
       showAiMessage(
-        `${baseMsg}。自动托管已开启，后台将每 ${savedConfig.intervalMinutes} 分钟发帖，刷新或重启后无需再点。`,
+        `${baseMsg}。自动托管已开启，后台将${intervalHint}，刷新或重启后无需再点。`,
         "ok",
       );
     } else {
