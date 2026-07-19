@@ -199,8 +199,19 @@ if (!fs.existsSync(electronInRoot)) {
 const builderBin = path.join(root, "node_modules", "electron-builder", "cli.js");
 const outDir = process.env.BUILD_OUTPUT_DIR || `release-${Date.now()}`;
 const prepackaged = process.env.BUILD_PREPACKAGED;
+// RELEASE_PUBLISH=0/never：强制不发布（CI 在本地已发过 Release 时避免 422 already_exists）
+// RELEASE_PUBLISH=1/always：强制发布
+// 未指定时：有 GH_TOKEN 才发布
+const publishFlag = String(process.env.RELEASE_PUBLISH || "").trim().toLowerCase();
 const publishMode =
-  process.env.GH_TOKEN || process.env.RELEASE_PUBLISH === "1" ? "always" : "never";
+  publishFlag === "0" || publishFlag === "never" || publishFlag === "false"
+    ? "never"
+    : publishFlag === "1" || publishFlag === "always" || publishFlag === "true"
+      ? "always"
+      : process.env.GH_TOKEN
+        ? "always"
+        : "never";
+console.log(`publish mode: ${publishMode}`);
 const args = ["--win", `--config.directories.output=${outDir}`, `--publish=${publishMode}`];
 if (prepackaged) args.push(`--prepackaged=${prepackaged}`);
 console.log(`输出目录: ${outDir}`);
