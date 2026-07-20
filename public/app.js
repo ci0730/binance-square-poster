@@ -367,6 +367,25 @@ function normalizeStoredPost(p) {
   const interruptedWhilePublishing = publishState === "publishing";
   if (interruptedWhilePublishing) publishState = "uncertain";
 
+  const rawResult = p.result || null;
+  let result = rawResult;
+  if (rawResult && typeof rawResult === "object") {
+    const realId = extractPostIdFromRef(rawResult.id) || extractPostIdFromRef(rawResult.shareLink);
+    const safeLink =
+      rawResult.shareLink && extractPostIdFromRef(rawResult.shareLink) ? rawResult.shareLink : null;
+    const assumed = isAssumedPublishResult(rawResult) || (!realId && Boolean(rawResult.assumedSuccess));
+    result = {
+      ...rawResult,
+      // 只保留可解析的真实广场 ID，清掉 assumed_ / 无效链接
+      id: realId || null,
+      shareLink: safeLink,
+    };
+    if (assumed) {
+      result.assumedSuccess = true;
+      result.publishStatus = rawResult.publishStatus || "assumed_success";
+    }
+  }
+
   return {
     id: p.id || generateId(),
     text: p.text || "",
@@ -377,7 +396,7 @@ function normalizeStoredPost(p) {
         ? false
         : p.selected !== false,
     publishState,
-    result: p.result || null,
+    result,
     error:
       p.error ||
       (interruptedWhilePublishing
@@ -1573,6 +1592,9 @@ async function init() {
   selectedMonitorAccountId = loadMonitorSettings().monitorAccountId || "";
   monitorSearchQuery = loadMonitorSettings().monitorSearchQuery || "";
   await loadAccounts();
+  // 账号加载后再合并「待核对」，避免无 accountId 的旧帖去重键错误
+  const dedupedOnLoad = dedupeAssumedPublishedPosts({ persist: false });
+  if (dedupedOnLoad > 0) saveDrafts();
   await syncAllLocalPublishedToCache();
   await loadConfig();
   await loadAiConfig();
@@ -2123,6 +2145,10 @@ function bindEvents() {
   $("#btnImport").addEventListener("click", () => openAppModal("importModal"));
   $("#btnClearDrafts").addEventListener("click", clearDrafts);
   $("#btnClearPublished").addEventListener("click", clearPublished);
+  $("#btnDedupeAssumed")?.addEventListener("click", () => {
+    const n = dedupeAssumedPublishedPosts();
+    showAppToast(n > 0 ? `已清理 ${n} 条重复「待核对」记录` : "没有可清理的重复待核对", n > 0 ? "ok" : "info");
+  });
   $("#btnDeleteSelected")?.addEventListener("click", deleteSelectedDrafts);
   $("#btnPublish").addEventListener("click", startBatchPublish);
 
@@ -2316,20 +2342,45 @@ function findLocalPostRefForAccount(accountId) {
   const defaultId = getDefaultAccountId();
   const post = posts.find((p) => {
     if (p.publishState !== "published") return false;
-    if (!(p.result?.id || p.result?.shareLink)) return false;
+    // 只用真实广场 ID，避免把 assumed_ 传给历史拉取接口
+    if (!getPostRef(p)) return false;
     if (p.accountId === accountId) return true;
     if (!p.accountId && accountId === defaultId) return true;
     return false;
   });
-  return post?.result?.id || extractPostIdFromRef(post?.result?.shareLink) || post?.result?.shareLink || null;
+  return getPostRef(post) || null;
 }
 
 function extractPostIdFromRef(ref) {
   if (!ref) return null;
   const value = String(ref).trim();
+  if (/^assumed_/i.test(value)) return null;
   if (/^\d+$/.test(value)) return value;
-  const m = value.match(/\/post\/(\d+)/i);
-  return m ? m[1] : null;
+  const patterns = [/\/cpos\/(\d+)/i, /\/post\/(\d+)/i, /contentId=(\d+)/i, /[?&]id=(\d+)/i];
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function isRealSquarePostRef(ref) {
+  return Boolean(extractPostIdFromRef(ref));
+}
+
+function isAssumedPublishResult(result) {
+  return Boolean(
+    result?.assumedSuccess ||
+      result?.publishStatus === "assumed_success" ||
+      /^assumed_/i.test(String(result?.id || "")),
+  );
+}
+
+function getPostRef(post) {
+  // 只返回可解析的真实广场帖子 ID，避免 assumed_ / 无效链接点「数据」报错
+  const fromId = extractPostIdFromRef(post.result?.id);
+  if (fromId) return fromId;
+  return extractPostIdFromRef(post.result?.shareLink);
 }
 
 function localPublishedPostsForAccount(accountId) {
@@ -2337,22 +2388,22 @@ function localPublishedPostsForAccount(accountId) {
   return posts
     .filter((p) => {
       if (p.publishState !== "published") return false;
-      const ref = p.result?.id || p.result?.shareLink;
-      if (!ref) return false;
+      // 不同步 assumed_ 占位，避免污染历史缓存
+      if (!getPostRef(p)) return false;
       if (p.accountId === accountId) return true;
       if (!p.accountId && accountId === defaultId) return true;
       return false;
     })
     .map((p) => ({
-      id: p.result.id || extractPostIdFromRef(p.result.shareLink),
+      id: getPostRef(p),
       text: p.text,
       title: p.title || "",
       shareLink: p.result.shareLink,
       publishedAt: p.publishedAt || Date.now(),
-      viewCount: p.stats?.viewCount ?? null,
-      likeCount: p.stats?.likeCount ?? null,
-      commentCount: p.stats?.commentCount ?? null,
-      shareCount: p.stats?.shareCount ?? null,
+      ...(p.stats?.viewCount != null ? { viewCount: p.stats.viewCount } : {}),
+      ...(p.stats?.likeCount != null ? { likeCount: p.stats.likeCount } : {}),
+      ...(p.stats?.commentCount != null ? { commentCount: p.stats.commentCount } : {}),
+      ...(p.stats?.shareCount != null ? { shareCount: p.stats.shareCount } : {}),
       source: "local",
     }));
 }
@@ -2375,7 +2426,7 @@ async function syncAllLocalPublishedToCache() {
   if (!defaultId) return;
   const byAccount = {};
   for (const p of posts) {
-    const postId = p.result?.id || extractPostIdFromRef(p.result?.shareLink);
+    const postId = getPostRef(p);
     if (p.publishState !== "published" || !postId) continue;
     const aid = p.accountId || defaultId;
     if (!byAccount[aid]) byAccount[aid] = [];
@@ -2385,10 +2436,11 @@ async function syncAllLocalPublishedToCache() {
       title: p.title || "",
       shareLink: p.result.shareLink,
       publishedAt: p.publishedAt || Date.now(),
-      viewCount: p.stats?.viewCount ?? null,
-      likeCount: p.stats?.likeCount ?? null,
-      commentCount: p.stats?.commentCount ?? null,
-      shareCount: p.stats?.shareCount ?? null,
+      // 本地草稿常没有互动数据：不要显式传 null，避免冲掉「一键获取互动」已写入的浏览量
+      ...(p.stats?.viewCount != null ? { viewCount: p.stats.viewCount } : {}),
+      ...(p.stats?.likeCount != null ? { likeCount: p.stats.likeCount } : {}),
+      ...(p.stats?.commentCount != null ? { commentCount: p.stats.commentCount } : {}),
+      ...(p.stats?.shareCount != null ? { shareCount: p.stats.shareCount } : {}),
       source: "local",
     });
   }
@@ -2469,7 +2521,7 @@ async function reloadPublishedPostsForSelectedAccount() {
 
 async function fetchAccountHistoryPosts(accountId) {
   const ref = findLocalPostRefForAccount(accountId);
-  let url = `/api/accounts/${encodeURIComponent(accountId)}/posts?limit=20`;
+  let url = `/api/accounts/${encodeURIComponent(accountId)}/posts?limit=40`;
   if (ref) url += `&postRef=${encodeURIComponent(ref)}`;
   const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
@@ -2493,55 +2545,103 @@ async function showPublishedPostsModalForAllAccounts() {
   const picker = document.querySelector(".published-posts-account-picker");
   if (picker) picker.classList.toggle("hidden", accountStore.accounts.length <= 1);
   $("#publishedPostsTitle").textContent = "全部账号 · 广场历史帖子";
-  $("#publishedPostsSubtitle").textContent = "正在依次从币安广场拉取...";
+  $("#publishedPostsSubtitle").textContent = "正在并行从币安广场拉取...";
   $("#publishedPostsStatus").textContent = "正在加载，请稍候...";
   $("#publishedPostsStatus").className = "message info";
   $("#publishedPostsList").innerHTML = "";
   $("#btnImportPublishedPosts").disabled = true;
   openAppModal("publishedPostsModal");
 
-  const merged = [];
-  const notes = [];
   const accounts = accountStore.accounts || [];
-  for (let i = 0; i < accounts.length; i += 1) {
-    const acc = accounts[i];
-    $("#publishedPostsStatus").textContent = `正在拉取「${acc.name}」(${i + 1}/${accounts.length})...`;
+  // 先展示本地缓存，避免干等远程
+  const cachedPreview = [];
+  for (const acc of accounts) {
+    const local = localPublishedPostsForAccount(acc.id).map((p) => ({
+      ...p,
+      accountId: acc.id,
+      accountName: acc.name,
+    }));
+    cachedPreview.push(...local);
+  }
+  if (cachedPreview.length) {
+    cachedPreview.sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
+    renderPublishedPostsList(cachedPreview, "正在拉取远程历史…");
+    $("#publishedPostsStatus").textContent = `已显示本地 ${cachedPreview.length} 条，正在并行拉取远程…`;
+  }
+
+  const notes = new Array(accounts.length).fill("");
+  const mergedByAccount = new Array(accounts.length);
+  let done = 0;
+  let cursor = 0;
+  // 多账号并行（浏览器拉历史较重，并发不宜过大）
+  const concurrency = Math.max(1, Math.min(3, accounts.length || 1));
+
+  async function fetchOne(acc, index) {
     if (!canFetchAccountHistory(acc.id)) {
-      notes.push(`「${acc.name}」暂无法拉取（需先发帖或配置用户名/Cookie）`);
-      continue;
+      notes[index] = `「${acc.name}」暂无法拉取（需先发帖或配置用户名/Cookie）`;
+      mergedByAccount[index] = [];
+      return;
     }
     try {
       const data = await fetchAccountHistoryPosts(acc.id);
-      if (data.posts?.length) {
-        merged.push(...data.posts);
-        notes.push(`「${acc.name}」${data.posts.length} 条`);
-      } else {
-        notes.push(`「${acc.name}」0 条`);
-      }
+      const list = data.posts?.length ? data.posts : [];
+      mergedByAccount[index] = list;
+      notes[index] = list.length ? `「${acc.name}」${list.length} 条` : `「${acc.name}」0 条`;
     } catch (err) {
       const localFallback = localPublishedPostsForAccount(acc.id).map((p) => ({
         ...p,
         accountId: acc.id,
         accountName: acc.name,
       }));
-      if (localFallback.length) {
-        merged.push(...localFallback);
-        notes.push(`「${acc.name}」远程失败，本地 ${localFallback.length} 条`);
-      } else {
-        notes.push(`「${acc.name}」失败：${err.message || "未知错误"}`);
-      }
+      mergedByAccount[index] = localFallback;
+      notes[index] = localFallback.length
+        ? `「${acc.name}」远程失败，本地 ${localFallback.length} 条`
+        : `「${acc.name}」失败：${err.message || "未知错误"}`;
+    } finally {
+      done += 1;
+      $("#publishedPostsStatus").textContent = `并行拉取中 ${done}/${accounts.length}… ${notes.filter(Boolean).join("；")}`;
     }
   }
 
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (cursor < accounts.length) {
+        const index = cursor++;
+        await fetchOne(accounts[index], index);
+      }
+    }),
+  );
+
+  const merged = mergedByAccount.flat().filter(Boolean);
   merged.sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
   publishedPostsCache = { accountId: "", posts: merged };
   await loadAccounts();
 
+  const linkedResult = reconcileAssumedPostsWithRemote(merged);
+  const linked = linkedResult.linked || 0;
+  const deduped = linkedResult.deduped || 0;
+  const baseStatus = notes.filter(Boolean).join("；") || "拉取完成";
+  const extras = [];
+  if (linked > 0) extras.push(`已回填 ${linked} 条「待核对」真实 ID`);
+  if (deduped > 0) extras.push(`已清理重复待核对 ${deduped} 条`);
+  const statusText = extras.length ? `${baseStatus}；${extras.join("，")}，可回列表点「数据」` : baseStatus;
+
   $("#publishedPostsSubtitle").textContent = `共 ${merged.length} 条 · ${accounts.length} 个账号`;
-  $("#publishedPostsStatus").textContent = notes.join("；") || "拉取完成";
-  $("#publishedPostsStatus").className = merged.length ? "message ok" : "message info";
+  $("#publishedPostsStatus").textContent = statusText;
+  $("#publishedPostsStatus").className = merged.length || linked > 0 || deduped > 0 ? "message ok" : "message info";
   renderPublishedPostsList(merged, merged.length ? "暂无已发布帖子" : "全部账号暂无已发布的广场帖子");
   $("#btnImportPublishedPosts").disabled = merged.length === 0;
+  if (linked > 0 || deduped > 0) {
+    showAppToast(extras.join("，") || statusText, "ok");
+  } else if (merged.some((p) => /^\d+$/.test(String(p?.id || "")))) {
+    const pending = posts.filter(isAssumedOrMissingIdPost).length;
+    if (pending > 0) {
+      showAppToast(
+        `历史已拉取，但仍有 ${pending} 条待核对未能匹配正文（可能未真正发出或文案不一致）。请到广场核对，勿重复发帖。`,
+        "info",
+      );
+    }
+  }
 }
 
 async function showPublishedPostsModal(accountId, { postRef } = {}) {
@@ -2564,7 +2664,7 @@ async function showPublishedPostsModal(accountId, { postRef } = {}) {
 
   try {
     const ref = postRef || findLocalPostRefForAccount(accountId);
-    let url = `/api/accounts/${encodeURIComponent(accountId)}/posts?limit=20`;
+    let url = `/api/accounts/${encodeURIComponent(accountId)}/posts?limit=40`;
     if (ref) url += `&postRef=${encodeURIComponent(ref)}`;
 
     const res = await fetch(url);
@@ -2582,6 +2682,10 @@ async function showPublishedPostsModal(accountId, { postRef } = {}) {
     }));
     publishedPostsCache = { accountId, posts };
     await loadAccounts();
+
+    const linkedResult = reconcileAssumedPostsWithRemote(posts);
+    const linked = linkedResult.linked || 0;
+    const deduped = linkedResult.deduped || 0;
 
     const identity = [
       data.displayName,
@@ -2614,6 +2718,14 @@ async function showPublishedPostsModal(accountId, { postRef } = {}) {
         : hasIdentity
           ? "该账号暂无已发布的广场帖子"
           : NO_HISTORY_DETECTED_MSG;
+    }
+    if (linked > 0 || deduped > 0) {
+      const extras = [];
+      if (linked > 0) extras.push(`已回填 ${linked} 条真实 ID`);
+      if (deduped > 0) extras.push(`已清理重复待核对 ${deduped} 条`);
+      statusText = `${statusText}；${extras.join("，")}`;
+      statusClass = "message ok";
+      showAppToast(extras.join("，"), "ok");
     }
     $("#publishedPostsStatus").textContent = statusText;
     $("#publishedPostsStatus").className = statusClass;
@@ -2651,6 +2763,163 @@ async function showPublishedPostsModal(accountId, { postRef } = {}) {
   }
 }
 
+function normalizeTextForHistoryMatch(text) {
+  return String(text || "")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/[#@$]/g, "")
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/\s+/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/** 粗粒度正文相似度（0~1），用于回包丢失后与广场历史对账 */
+function textSimilarityForHistory(a, b) {
+  const x = normalizeTextForHistoryMatch(a);
+  const y = normalizeTextForHistoryMatch(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  if (x.includes(y) || y.includes(x)) {
+    const shorter = Math.min(x.length, y.length);
+    const longer = Math.max(x.length, y.length);
+    return Math.min(0.98, shorter / Math.max(1, longer) + 0.15);
+  }
+  const n = Math.min(48, x.length, y.length);
+  if (n >= 20 && x.slice(0, n) === y.slice(0, n)) return 0.9;
+  // 二元组 Dice
+  const grams = (s) => {
+    const set = new Set();
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+    return set;
+  };
+  const gx = grams(x);
+  const gy = grams(y);
+  if (!gx.size || !gy.size) return 0;
+  let inter = 0;
+  for (const g of gx) if (gy.has(g)) inter += 1;
+  return (2 * inter) / (gx.size + gy.size);
+}
+
+function isAssumedOrMissingIdPost(post) {
+  if (!post || post.publishState !== "published") return false;
+  return !getPostRef(post);
+}
+
+/** 合并同账号、同正文的「待核对」重复卡（只留一条）。返回删除条数，不自动存盘。 */
+function dedupeAssumedPublishedPosts({ persist = true } = {}) {
+  const kept = new Map(); // key -> post
+  const removeIds = new Set();
+  for (const local of posts) {
+    if (!isAssumedOrMissingIdPost(local)) continue;
+    const accountId = local.accountId || getDefaultAccountId() || "";
+    const norm = normalizeTextForHistoryMatch(local.text);
+    if (norm.length < 8) continue;
+    const key = `${accountId}::${norm}`;
+    const prev = kept.get(key);
+    if (!prev) {
+      kept.set(key, local);
+      continue;
+    }
+    const prevAt = prev.publishedAt || prev.createdAt || 0;
+    const curAt = local.publishedAt || local.createdAt || 0;
+    if (curAt >= prevAt) {
+      removeIds.add(prev.id);
+      kept.set(key, local);
+    } else {
+      removeIds.add(local.id);
+    }
+  }
+  if (!removeIds.size) return 0;
+  posts = posts.filter((p) => !removeIds.has(p.id));
+  if (persist) {
+    saveDrafts();
+    renderPosts();
+  }
+  return removeIds.size;
+}
+
+/** 用广场历史帖的真实 ID，回填本地「回包丢失 / 待核对」记录 */
+function reconcileAssumedPostsWithRemote(remotePosts = []) {
+  if (!Array.isArray(remotePosts) || !remotePosts.length) return { linked: 0, deduped: 0 };
+  let linked = 0;
+  const usedRemoteIds = new Set();
+  // 已有真实 ID 的本地帖，禁止再被其它待核对抢走
+  for (const p of posts) {
+    const ref = getPostRef(p);
+    if (ref) usedRemoteIds.add(String(ref));
+  }
+
+  const remotes = remotePosts.filter((rp) => /^\d+$/.test(String(rp?.id || "")));
+
+  for (const local of posts) {
+    if (!isAssumedOrMissingIdPost(local)) continue;
+
+    const accountId = local.accountId || getDefaultAccountId();
+    const localNorm = normalizeTextForHistoryMatch(local.text);
+    if (localNorm.length < 12) continue;
+    const localAt = local.publishedAt || local.createdAt || 0;
+
+    let best = null;
+    let bestScore = 0;
+    for (const rp of remotes) {
+      const rid = String(rp.id);
+      if (usedRemoteIds.has(rid)) continue;
+      const rpAccount = rp.accountId || publishedPostsCache.accountId || "";
+      if (accountId && rpAccount && rpAccount !== accountId) continue;
+
+      let score = textSimilarityForHistory(local.text, rp.text || rp.bodyTextOnly || "");
+      if (score < 0.72) continue;
+
+      // 发布时间接近则加分（回包丢失常见于同一次发送）
+      const remoteAt = rp.publishedAt || rp.createTime || 0;
+      if (localAt && remoteAt) {
+        const diff = Math.abs(localAt - remoteAt);
+        if (diff <= 2 * 60 * 60 * 1000) score += 0.06;
+        else if (diff <= 24 * 60 * 60 * 1000) score += 0.02;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = rp;
+      }
+    }
+
+    if (!best || bestScore < 0.82) continue;
+    const realId = String(best.id);
+    usedRemoteIds.add(realId);
+    local.result = {
+      ...(local.result || {}),
+      id: realId,
+      shareLink:
+        best.shareLink && isRealSquarePostRef(best.shareLink)
+          ? best.shareLink
+          : `https://www.binance.com/zh-CN/square/post/${realId}`,
+      assumedSuccess: false,
+      publishStatus: "confirmed_by_history",
+    };
+    local.statsError = null;
+    if (best.viewCount != null || best.likeCount != null || best.commentCount != null) {
+      local.stats = {
+        ...(local.stats || {}),
+        viewCount: best.viewCount ?? local.stats?.viewCount ?? null,
+        likeCount: best.likeCount ?? local.stats?.likeCount ?? null,
+        commentCount: best.commentCount ?? local.stats?.commentCount ?? null,
+        shareCount: best.shareCount ?? local.stats?.shareCount ?? null,
+        fetchedAt: Date.now(),
+      };
+    }
+    linked += 1;
+  }
+
+  // 回填后清掉同文案的多余「待核对」
+  const deduped = dedupeAssumedPublishedPosts({ persist: false });
+  if (linked > 0 || deduped > 0) {
+    saveDrafts();
+    renderPosts();
+  }
+  return { linked, deduped };
+}
+
 function importPublishedPostsToList() {
   const { posts: remotePosts } = publishedPostsCache;
   if (!remotePosts?.length) {
@@ -2658,17 +2927,62 @@ function importPublishedPostsToList() {
     return;
   }
 
-  const existingIds = new Set(
-    posts.map((p) => p.result?.id).filter(Boolean).map(String)
-  );
+  // 先把「待核对」本地帖与历史真实 ID 对上，再导入其余新帖
+  const { linked, deduped } = reconcileAssumedPostsWithRemote(remotePosts);
+
+  // 仅按「真实帖子 ID」判断是否已在列表；本地删除后应能再次导入
+  const existingIds = new Set(posts.map((p) => getPostRef(p)).filter(Boolean).map(String));
   let imported = 0;
+  let skippedExisting = 0;
 
   try {
     for (const rp of remotePosts) {
-      if (!rp.id || existingIds.has(String(rp.id))) continue;
-      existingIds.add(String(rp.id));
+      const rid = rp?.id != null ? String(rp.id) : "";
+      if (!/^\d+$/.test(rid)) continue;
+      if (existingIds.has(rid)) {
+        skippedExisting += 1;
+        continue;
+      }
+
       const accountId = rp.accountId || publishedPostsCache.accountId || getDefaultAccountId();
       const accountName = rp.accountName || getAccountName(accountId);
+      const textNorm = normalizeTextForHistoryMatch(rp.text || "");
+
+      // 同账号同正文的「待核对」：直接回填到原卡片，不新建、也不跳过
+      const assumedSame = posts.find(
+        (p) =>
+          isAssumedOrMissingIdPost(p) &&
+          (p.accountId || getDefaultAccountId()) === accountId &&
+          textNorm &&
+          normalizeTextForHistoryMatch(p.text) === textNorm,
+      );
+      if (assumedSame) {
+        assumedSame.result = {
+          ...(assumedSame.result || {}),
+          id: rid,
+          shareLink:
+            rp.shareLink && isRealSquarePostRef(rp.shareLink)
+              ? rp.shareLink
+              : `https://www.binance.com/zh-CN/square/post/${rid}`,
+          assumedSuccess: false,
+          publishStatus: "confirmed_by_history",
+        };
+        assumedSame.statsError = null;
+        assumedSame.publishedAt = assumedSame.publishedAt || rp.publishedAt || Date.now();
+        assumedSame.stats = {
+          ...(assumedSame.stats || {}),
+          viewCount: rp.viewCount ?? assumedSame.stats?.viewCount ?? null,
+          likeCount: rp.likeCount ?? assumedSame.stats?.likeCount ?? null,
+          commentCount: rp.commentCount ?? assumedSame.stats?.commentCount ?? null,
+          shareCount: rp.shareCount ?? assumedSame.stats?.shareCount ?? null,
+          fetchedAt: Date.now(),
+        };
+        existingIds.add(rid);
+        imported += 1;
+        continue;
+      }
+
+      existingIds.add(rid);
       posts.push({
         id: generateId(),
         text: rp.text || "",
@@ -2678,7 +2992,7 @@ function importPublishedPostsToList() {
         accountName,
         selected: false,
         publishState: "published",
-        result: { id: rp.id, shareLink: rp.shareLink },
+        result: { id: rid, shareLink: rp.shareLink },
         error: null,
         publishedAt: rp.publishedAt || Date.now(),
         createdAt: Date.now(),
@@ -2693,33 +3007,52 @@ function importPublishedPostsToList() {
       imported++;
     }
 
+    // 导入后再合并一次同文案待核对
+    const extraDeduped = dedupeAssumedPublishedPosts({ persist: false });
     saveDrafts();
+    renderPosts();
+
+    const parts = [];
+    if (imported > 0) parts.push(`导入/回填 ${imported} 条`);
+    if (linked > 0) parts.push(`对账回填 ${linked} 条`);
+    if (deduped + extraDeduped > 0) parts.push(`清理重复 ${deduped + extraDeduped} 条`);
+
+    const realRemote = remotePosts.filter((p) => /^\d+$/.test(String(p?.id || "")));
+    const newestRemoteAt = realRemote.reduce((max, p) => Math.max(max, p.publishedAt || 0), 0);
+    const newestLabel = newestRemoteAt ? formatTime(newestRemoteAt, true) : "";
+
+    let message;
+    let statusType = "ok";
+    if (parts.length) {
+      message = `已${parts.join("，")}；可点「数据」刷新互动`;
+    } else if (skippedExisting > 0) {
+      const accountHint = publishedPostsCache.accountId
+        ? `「${getAccountName(publishedPostsCache.accountId)}」`
+        : "当前拉取范围内";
+      message = `${accountHint}历史里这 ${skippedExisting} 条都已在本地，没有可新导入的。${
+        newestLabel ? `广场侧最近一条约 ${newestLabel}。` : ""
+      }若你要找的时间点不在其中，说明当时回包丢失后广场上可能并未真正发出，请打开币安广场该账号主页核对，勿重复发帖。`;
+      statusType = "info";
+    } else {
+      message =
+        "当前历史结果里没有可导入的真实帖子 ID。请重新拉取广场历史后再试；若仍没有，请到币安广场核对是否真的发出。";
+      statusType = "info";
+    }
+
+    $("#publishedPostsStatus").textContent = message;
+    $("#publishedPostsStatus").className = `message ${statusType}`;
+    appendSystemLog(message, statusType === "ok" ? "ok" : "info");
+
+    $("#publishedPostsModal").close();
+    switchView("published");
+    showPublishedImportStatus(message, statusType);
+    setTimeout(() => showAppToast(message, statusType), 50);
   } catch (err) {
     console.error("importPublishedPostsToList failed:", err);
     showAppToast(`导入失败：${err.message || "保存本地数据出错"}`, "err");
     $("#publishedPostsStatus").textContent = `导入失败：${err.message || "保存本地数据出错"}`;
     $("#publishedPostsStatus").className = "message err";
-    return;
   }
-
-  const message =
-    imported > 0 ? `已成功导入 ${imported} 条帖子到已发布列表` : "帖子已在列表中，无需重复导入";
-  const logType = imported > 0 ? "ok" : "info";
-  const statusType = imported > 0 ? "ok" : "info";
-
-  $("#publishedPostsStatus").textContent = message;
-  $("#publishedPostsStatus").className = `message ${statusType}`;
-  appendSystemLog(message, logType);
-
-  if (imported > 0) {
-    $("#publishedPostsModal").close();
-    switchView("published");
-    showPublishedImportStatus(message, statusType);
-    setTimeout(() => showAppToast(message, statusType), 50);
-    return;
-  }
-
-  showAppToast(message, statusType);
 }
 
 async function discoverAccountFromPost(accountId, postRef) {
@@ -4315,11 +4648,11 @@ async function applyAiConfigToUI(data) {
   }
   if ($("#aiPublishDelayMinInput")) {
     $("#aiPublishDelayMinInput").value =
-      data.publishDelayMinSeconds ?? data.publishIntervalSeconds ?? 3;
+      data.publishDelayMinSeconds ?? data.publishIntervalSeconds ?? 30;
   }
   if ($("#aiPublishDelayMaxInput")) {
     $("#aiPublishDelayMaxInput").value =
-      data.publishDelayMaxSeconds ?? data.publishIntervalSeconds ?? 8;
+      data.publishDelayMaxSeconds ?? data.publishIntervalSeconds ?? 60;
   }
   if ($("#aiAutoPublish")) $("#aiAutoPublish").checked = data.autoPublish !== false;
   if ($("#aiAttachImages")) $("#aiAttachImages").checked = data.attachRelatedImages !== false;
@@ -4379,7 +4712,7 @@ function renderHostedSummary(hosted = []) {
     <div class="ai-hosted-stat"><div class="k">账号数</div><div class="v">${hosted.length}</div></div>
     <div class="ai-hosted-stat"><div class="k">已启用托管</div><div class="v">${enabled}</div></div>
     <div class="ai-hosted-stat"><div class="k">文章数量</div><div class="v">${formatMetric(articles)}</div></div>
-    <div class="ai-hosted-stat"><div class="k">总浏览量</div><div class="v">${formatMetric(views)}</div></div>
+    <div class="ai-hosted-stat" title="各账号本地缓存帖浏览合计"><div class="k">总浏览量</div><div class="v">${formatMetric(views)}</div></div>
   `;
 }
 
@@ -4426,7 +4759,8 @@ async function refreshHostedAccountMetrics() {
   }
 
   const controller = new AbortController();
-  const watchdog = setTimeout(() => controller.abort(), 45000);
+  // 并行拉取：账号并发 + 帖子并发，总时限约 1 分钟足够十余个账号
+  const watchdog = setTimeout(() => controller.abort(), 70000);
 
   try {
     const res = await fetch("/api/hosted/metrics/refresh", {
@@ -4435,10 +4769,12 @@ async function refreshHostedAccountMetrics() {
       signal: controller.signal,
       body: JSON.stringify({
         accountIds,
-        limitPerAccount: 5,
-        delayMs: 50,
+        limitPerAccount: 12,
+        postConcurrency: 5,
+        accountConcurrency: 5,
+        delayMs: 0,
         postTimeoutMs: 4000,
-        deadlineMs: 35000,
+        deadlineMs: 60000,
         useAccountProxy: false,
       }),
     });
@@ -4963,7 +5299,7 @@ function renderHostedAccountsList(data) {
             <th>观点</th>
             <th>文章数</th>
             <th title="该账号今日已发 / 单账号每日上限">今日(单账号)</th>
-            <th>浏览量</th>
+            <th title="本地缓存帖浏览合计；一键获取并行刷新最近约 12 条">浏览量</th>
             <th>点赞</th>
             <th>评论</th>
             <th>佣金</th>
@@ -5004,7 +5340,7 @@ function renderHostedAccountsList(data) {
                 </td>
                 <td class="num">${formatMetric(host.articleCount)}</td>
                 <td class="num" title="该账号今日已发 / 单账号每日上限">${host.todayPublished || 0}/${host.maxPostsPerDay || 10}</td>
-                <td class="num">${formatMetric(host.viewCount)}</td>
+                <td class="num" title="本地已缓存帖子的浏览合计（一键获取并行刷新最近约 12 条）">${formatMetric(host.viewCount)}</td>
                 <td class="num">${formatMetric(host.likeCount)}</td>
                 <td class="num">${formatMetric(host.commentCount)}</td>
                 <td class="num muted" title="广场暂无统一佣金接口">${formatCommission(host.commission)}</td>
@@ -6056,10 +6392,10 @@ function collectAiHostingSettingsFromUI() {
     out.hostConcurrency = Math.max(1, Math.min(parseInt($("#aiHostConcurrencyInput").value, 10) || 3, 8));
   }
   if ($("#aiPublishDelayMinInput")) {
-    out.publishDelayMinSeconds = parseInt($("#aiPublishDelayMinInput").value, 10) || 3;
+    out.publishDelayMinSeconds = parseInt($("#aiPublishDelayMinInput").value, 10) || 30;
   }
   if ($("#aiPublishDelayMaxInput")) {
-    out.publishDelayMaxSeconds = parseInt($("#aiPublishDelayMaxInput").value, 10) || out.publishDelayMinSeconds || 3;
+    out.publishDelayMaxSeconds = parseInt($("#aiPublishDelayMaxInput").value, 10) || out.publishDelayMinSeconds || 60;
   }
   if ($("#aiAutoPublish")) out.autoPublish = $("#aiAutoPublish").checked;
   if ($("#aiAttachImages")) out.attachRelatedImages = $("#aiAttachImages").checked;
@@ -6615,6 +6951,46 @@ async function aiRun({ publish = false } = {}) {
     if (publish && data.published?.length) {
       data.published.forEach((item) => {
         const accountId = item.accountId || config.accountId;
+        const raw = item.result || {};
+        // 回包丢失时不要把 assumed_ 假 ID / 伪造链接写进已发布列表
+        const realId = extractPostIdFromRef(raw.id) || extractPostIdFromRef(raw.shareLink);
+        const result = {
+          ...raw,
+          id: realId || null,
+          shareLink: raw.shareLink && isRealSquarePostRef(raw.shareLink) ? raw.shareLink : null,
+        };
+        if (!realId && (raw.assumedSuccess || raw.publishStatus === "assumed_success")) {
+          result.assumedSuccess = true;
+          result.publishStatus = raw.publishStatus || "assumed_success";
+        }
+        const textKey = normalizeTextForHistoryMatch(item.text);
+        const existing = posts.find((p) => {
+          if (p.publishState !== "published") return false;
+          if ((p.accountId || "") !== (accountId || "")) return false;
+          if (normalizeTextForHistoryMatch(p.text) !== textKey) return false;
+          // 同文案：优先更新「待核对」；若已有真实 ID 且本次也无新 ID，则跳过
+          if (realId) return !getPostRef(p) || getPostRef(p) === realId;
+          return !getPostRef(p);
+        });
+        if (existing) {
+          existing.result = { ...(existing.result || {}), ...result };
+          existing.error = null;
+          existing.publishedAt = existing.publishedAt || Date.now();
+          existing.accountId = accountId;
+          existing.accountName = getAccountName(accountId);
+          return;
+        }
+        // 已有同文案真实帖时，不要再插一条「待核对」
+        if (!realId) {
+          const alreadyConfirmed = posts.some(
+            (p) =>
+              p.publishState === "published" &&
+              (p.accountId || "") === (accountId || "") &&
+              normalizeTextForHistoryMatch(p.text) === textKey &&
+              getPostRef(p),
+          );
+          if (alreadyConfirmed) return;
+        }
         posts.push({
           id: generateId(),
           text: item.text,
@@ -6624,12 +7000,13 @@ async function aiRun({ publish = false } = {}) {
           accountName: getAccountName(accountId),
           selected: false,
           publishState: "published",
-          result: item.result,
+          result,
           error: null,
           publishedAt: Date.now(),
           createdAt: Date.now(),
         });
       });
+      dedupeAssumedPublishedPosts({ persist: false });
       saveDrafts();
       renderPosts();
       syncAllLocalPublishedToCache();
@@ -6795,10 +7172,6 @@ function stateClass(post) {
   }
 }
 
-function getPostRef(post) {
-  return post.result?.id || post.result?.shareLink || null;
-}
-
 function renderCommentsButton(post) {
   const countLabel = post.stats?.commentCount ?? 0;
   return `<button type="button" class="stat-item stat-comments-btn" data-action="toggle-comments" data-id="${post.id}" title="点击查看评论">💬 ${countLabel}${post.commentsExpanded ? " ▾" : ""}</button>`;
@@ -6830,7 +7203,15 @@ function renderCommentsPanel(post) {
 }
 
 function renderStatsBlock(post) {
-  if (post.publishState !== "published" || !getPostRef(post)) return "";
+  if (post.publishState !== "published") return "";
+
+  // 回包丢失默认成功：没有真实帖子 ID，无法拉互动
+  if (!getPostRef(post)) {
+    if (isAssumedPublishResult(post.result)) {
+      return `<div class="post-stats empty">未拿到帖子 ID（确认回包丢失），无法拉取互动；请到币安广场核对，勿重复发帖</div>`;
+    }
+    return "";
+  }
 
   if (post.statsLoading) {
     return `<div class="post-stats loading">正在获取互动数据…（代理慢时最多约 15 秒）</div>`;
@@ -6886,7 +7267,10 @@ async function refreshPostStats(postId, { silent = false, checkAlert = true } = 
   if (!post) return false;
   const ref = getPostRef(post);
   if (!ref) {
-    if (!silent) await appAlert({ title: "提示", message: "该帖子没有可用的链接或 ID", variant: "info" });
+    const tip = isAssumedPublishResult(post.result)
+      ? "该帖未拿到真实帖子 ID（确认回包丢失），无法拉取互动。请到币安广场核对。"
+      : "该帖子没有可用的链接或 ID";
+    if (!silent) await appAlert({ title: "提示", message: tip, variant: "info" });
     return false;
   }
 
@@ -7182,7 +7566,13 @@ function buildPostCardHtml(p, index, { selectable = true } = {}) {
           ${p.title ? `<span class="tag">文章: ${escapeHtml(p.title)}</span>` : "<span>短帖</span>"}
           ${p.imagePaths?.length ? `<span>${p.imagePaths.length} 张图片</span>` : ""}
           ${p.publishedAt ? `<span>发布于 ${formatTime(p.publishedAt, true)}</span>` : ""}
-          ${p.result?.shareLink ? `<a href="${p.result.shareLink}" target="_blank" rel="noopener">查看链接</a>` : ""}
+          ${
+            p.result?.shareLink && isRealSquarePostRef(p.result.shareLink)
+              ? `<a href="${p.result.shareLink}" target="_blank" rel="noopener">查看链接</a>`
+              : isAssumedPublishResult(p.result)
+                ? `<span class="muted" title="确认回包丢失，未拿到可打开的帖子链接">待核对</span>`
+                : ""
+          }
           ${p.error ? `<span class="error-text">${escapeHtml(p.error)}</span>` : ""}
         </div>
         ${renderStatsBlock(p)}
@@ -7675,14 +8065,43 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
+async function removePublishedPostsFromServerCache(entries = []) {
+  const byAccount = new Map();
+  for (const entry of entries) {
+    const accountId = entry.accountId || getDefaultAccountId();
+    const postId = entry.postId || entry.id;
+    if (!accountId || !postId || !/^\d+$/.test(String(postId))) continue;
+    if (!byAccount.has(accountId)) byAccount.set(accountId, []);
+    byAccount.get(accountId).push(String(postId));
+  }
+  await Promise.all(
+    [...byAccount.entries()].map(async ([accountId, postIds]) => {
+      try {
+        await fetch(`/api/accounts/${encodeURIComponent(accountId)}/posts/cache`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ postIds }),
+        });
+      } catch {
+        // ignore cache sync errors
+      }
+    }),
+  );
+}
+
 async function deletePost(id) {
   const post = posts.find((p) => p.id === id);
   if (!post) return;
   const label = post.publishState === "published" ? "已发布帖子" : "帖子";
   if (!(await appConfirm({ title: "确认", message: `确定删除这条${label}？` }))) return;
+  const cacheEntry =
+    post.publishState === "published" && getPostRef(post)
+      ? { accountId: post.accountId || getDefaultAccountId(), postId: getPostRef(post) }
+      : null;
   posts = posts.filter((p) => p.id !== id);
   saveDrafts();
   renderPosts();
+  if (cacheEntry) removePublishedPostsFromServerCache([cacheEntry]);
 }
 
 async function clearDrafts() {
@@ -7711,9 +8130,13 @@ async function clearPublished() {
   const publishedPosts = posts.filter((p) => p.publishState === "published");
   if (!publishedPosts.length) return void appAlert({ title: "提示", message: "没有已发布的帖子", variant: "info" });
   if (!(await appConfirm({ title: "确认", message: `确定清空 ${publishedPosts.length} 条已发布记录？草稿会保留。` }))) return;
+  const cacheEntries = publishedPosts
+    .map((p) => ({ accountId: p.accountId || getDefaultAccountId(), postId: getPostRef(p) }))
+    .filter((e) => e.postId);
   posts = posts.filter((p) => p.publishState !== "published");
   saveDrafts();
   renderPosts();
+  if (cacheEntries.length) removePublishedPostsFromServerCache(cacheEntries);
 }
 
 function selectDraftsOnly() {
@@ -8102,6 +8525,14 @@ function handleSSE(event, data, publishQueue) {
       break;
 
     case "done":
+      // 日限额等提前中止时，未收到 result 的帖会卡在 publishing
+      publishQueue.forEach(({ post }) => {
+        if (post.publishState === "publishing") {
+          post.publishState = "draft";
+          post.selected = true;
+          post.error = "批量发布已提前结束，本条尚未提交，可重新勾选发布";
+        }
+      });
       $("#progressBar").style.width = "100%";
       $("#progressText").textContent = `完成：成功 ${data.succeeded} 条，失败 ${data.failed} 条${data.uncertain ? `，待确认 ${data.uncertain} 条` : ""}`;
       log(
@@ -8109,6 +8540,7 @@ function handleSSE(event, data, publishQueue) {
         "info",
       );
       saveDrafts();
+      renderPosts();
       break;
   }
 }

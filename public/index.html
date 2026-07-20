@@ -538,16 +538,16 @@
                 <input type="number" id="aiMaxPerDayInput" value="10" min="1" max="100" />
                 条
               </label>
-              <label class="inline-label" title="同时写稿/发帖的路数。设为 1 则账号逐个排队，本轮仍会跑完所有启用账号">
+              <label class="inline-label" title="同时写稿的路数。发帖仍按账号各自独立代理排队，不会改走本地全局">
                 并行账号数
                 <input type="number" id="aiHostConcurrencyInput" value="3" min="1" max="8" />
                 路
               </label>
-              <label class="inline-label">
+              <label class="inline-label" title="每条发帖之间的等待（全局发帖队列 + 同账号连发）">
                 条间间隔
-                <input type="number" id="aiPublishDelayMinInput" value="3" min="1" max="600" />
+                <input type="number" id="aiPublishDelayMinInput" value="30" min="1" max="600" />
                 ～
-                <input type="number" id="aiPublishDelayMaxInput" value="8" min="1" max="600" />
+                <input type="number" id="aiPublishDelayMaxInput" value="60" min="1" max="600" />
                 秒
               </label>
             </div>
@@ -593,7 +593,7 @@
               <h3 class="ai-host-pane-title">托管账号列表</h3>
               <p id="hostMetricsStatus" class="host-metrics-status" aria-live="polite"></p>
               <div class="ai-hosted-head-actions">
-                <button type="button" class="btn btn-secondary btn-sm" id="btnHostRefreshMetrics" title="经全局代理拉取浏览量/点赞/评论（公开数据，不占用账号 SOCKS）">一键获取互动</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnHostRefreshMetrics" title="经全局代理并行拉取本地缓存帖互动（每账号约最近 12 条；账号与帖子双并发，不占用账号 SOCKS）">一键获取互动</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btnHostSelectAll" title="勾选全部账号">全选</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btnHostSelectPage" title="仅勾选本页最多 10 个">本页</button>
                 <button type="button" class="btn btn-ghost btn-sm" id="btnHostClearPage" title="取消勾选：上次全选则取消全部，上次本页则取消本页">取消</button>
@@ -790,6 +790,7 @@
           <div class="header-actions">
             <select id="historyAccountSelect" class="account-select" title="选择要拉取历史帖子的账号"></select>
             <button class="btn btn-secondary btn-sm" id="btnFetchHistoryPosts">拉取广场历史帖子</button>
+            <button class="btn btn-secondary btn-sm" id="btnDedupeAssumed">清理重复待核对</button>
             <button class="btn btn-secondary btn-sm" id="btnExportExcel">导出 Excel</button>
             <button class="btn btn-ghost btn-sm" id="btnClearPublished">清空已发布</button>
           </div>

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findMatchingPublishedPost } from "../lib/square-api.js";
+import { findMatchingPublishedPost, confirmRecentPublish } from "../lib/square-api.js";
 
 test("findMatchingPublishedPost matches recent identical body text", () => {
   const text = "今天看了一下比特币走势，波动还是挺大的，先观察仓位别追高。";
@@ -42,4 +42,18 @@ test("findMatchingPublishedPost matches by shared long head prefix", () => {
   ];
   const matched = findMatchingPublishedPost(items, base);
   assert.equal(matched?.id, "post_2");
+});
+
+test("confirmRecentPublish skips cookie-dependent checks when cookie missing", async () => {
+  const started = Date.now();
+  const messages = [];
+  const result = await confirmRecentPublish({
+    apiKey: "test-key",
+    cookie: "",
+    text: "一段足够长的正文用于核对是否需要 Cookie 才会去拉广场列表。",
+    onProgress: (info) => messages.push(info?.message || ""),
+  });
+  assert.equal(result, null);
+  assert.ok(Date.now() - started < 2000, "should not spin on cookie-less confirm");
+  assert.ok(messages.some((m) => /未配置 Cookie|跳过/.test(m)));
 });

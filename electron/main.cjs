@@ -286,12 +286,14 @@ function createWindow() {
   try {
     // 标题栏跟随应用主题（默认深色，避免白顶栏和深色 UI 割裂）
     applyNativeWindowTheme("dark");
+    const iconPath = path.join(__dirname, "icon.ico");
     mainWindow = new BrowserWindow({
       width: 1360,
       height: 920,
       minWidth: 1024,
       minHeight: 680,
       title: "币安广场批量发帖",
+      icon: fs.existsSync(iconPath) ? iconPath : undefined,
       autoHideMenuBar: true,
       show: false,
       backgroundColor: WINDOW_BG.dark,

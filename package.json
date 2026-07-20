@@ -1,6 +1,6 @@
 {
   "name": "binance-square-poster",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Multi-account desktop tool for publishing and AI-assisted writing on Binance Square",
   "author": "Binance Square Poster",
   "type": "module",
@@ -72,6 +72,7 @@
       "target": [
         "nsis"
       ],
+      "icon": "build/icon.ico",
       "artifactName": "${productName}-Setup-${version}.${ext}",
       "signAndEditExecutable": false
     },
@@ -82,6 +83,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "币安广场批量发帖",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
       "installerLanguages": [
         "zh_CN",
         "en_US"

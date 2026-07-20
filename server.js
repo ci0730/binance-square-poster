@@ -33,12 +33,13 @@ import {
   getAccountName,
   getDefaultAccountId,
   getAccount,
+  getAccountProxyConfig,
   resolveAccountProxy,
   resolveProxyUrlFromBody,
   mergeAccountProxyCredentials,
   describeAccountProxyNetworkHint,
 } from "./lib/accounts.js";
-import { normalizeProxyConfig, isBlankProxyPassword } from "./lib/proxy-config.js";
+import { normalizeProxyConfig, isBlankProxyPassword, isCustomProxyConfig } from "./lib/proxy-config.js";
 import { probeProxy, measureProxyLatency } from "./lib/proxy-probe.js";
 import { fetchPostStatsByRef } from "./lib/square-stats.js";
 import { fetchPostCommentsByRef, closeBrowserClient, testBrowserLaunch } from "./lib/square-browser.js";
@@ -47,8 +48,11 @@ import {
   getCachedPosts,
   cachePublishedPost,
   mergeCachedPosts,
+  mergeCachedPostsSafe,
   syncCachedPosts,
+  removeCachedPosts,
   getAccountPostMetrics,
+  scrubAssumedCachedPosts,
 } from "./lib/post-cache.js";
 import {
   getAiSettingsPublic,
@@ -218,8 +222,10 @@ async function handleBatchPublish(req, res, posts, intervalSeconds) {
       const result = await publishPost(apiKey, post, uploadsDir, (info) => {
         send("progress", { index: i, total: posts.length, status: info.stage, message: info.message, accountName });
       }, {
+        // 批量发帖：每条帖按 post.accountId 走各自独立代理；自定义代理禁止回落全局
         proxyUrl: resolveAccountProxy(post.accountId),
         cookie: getAccountCookie(post.accountId),
+        allowProxyFallback: !isCustomProxyConfig(getAccountProxyConfig(post.accountId)),
       });
       const accountId = post.accountId || getDefaultAccountId();
       if (accountId && result?.id) {
@@ -415,6 +421,18 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse(await readBody(req));
       const posts = syncCachedPosts(accountId, body.posts || []);
       json(res, 200, { ok: true, accountId, count: posts.length });
+      return;
+    }
+
+    if (accountPostsCacheRoute && req.method === "DELETE") {
+      const accountId = decodeURIComponent(accountPostsCacheRoute[1]);
+      if (!getAccount(accountId)) {
+        json(res, 404, { error: "账号不存在" });
+        return;
+      }
+      const body = JSON.parse(await readBody(req).catch(() => "{}"));
+      const removed = removeCachedPosts(accountId, body.postIds || body.ids || []);
+      json(res, 200, { ok: true, accountId, removed });
       return;
     }
 
@@ -744,8 +762,10 @@ const server = http.createServer(async (req, res) => {
       const apiKey = resolveAccountApiKey(body.accountId);
       try {
         const result = await publishPost(apiKey, body, uploadsDir, undefined, {
+          // 单发：带入该账号独立代理，自定义类型不回落本机全局
           proxyUrl: resolveAccountProxy(body.accountId),
           cookie: getAccountCookie(body.accountId),
+          allowProxyFallback: !isCustomProxyConfig(getAccountProxyConfig(body.accountId)),
         });
         const accountId = body.accountId || getDefaultAccountId();
         if (accountId && result?.id) {
@@ -849,10 +869,16 @@ const server = http.createServer(async (req, res) => {
     // 托管列表一键拉取互动（公开读接口）：默认走全局代理，整轮硬截止，避免 SOCKS 卡死
     if (pathname === "/api/hosted/metrics/refresh" && req.method === "POST") {
       const body = JSON.parse(await readBody(req));
-      const limitPerAccount = Math.max(1, Math.min(parseInt(body.limitPerAccount, 10) || 5, 12));
-      const delayMs = Math.max(0, Math.min(parseInt(body.delayMs, 10) || 50, 800));
-      const postTimeoutMs = Math.max(2500, Math.min(parseInt(body.postTimeoutMs, 10) || 4000, 10000));
-      const deadlineMs = Math.max(10000, Math.min(parseInt(body.deadlineMs, 10) || 35000, 60000));
+      const limitPerAccount = Math.max(1, Math.min(parseInt(body.limitPerAccount, 10) || 12, 40));
+      const delayMs = Math.max(0, Math.min(parseInt(body.delayMs, 10) || 0, 800));
+      const postTimeoutMs = Math.max(2000, Math.min(parseInt(body.postTimeoutMs, 10) || 4000, 10000));
+      const deadlineMs = Math.max(10000, Math.min(parseInt(body.deadlineMs, 10) || 60000, 120000));
+      // 账号内帖子并发 + 多账号并发：互动是公开读接口，可安全并行
+      const postConcurrency = Math.max(1, Math.min(parseInt(body.postConcurrency, 10) || 5, 8));
+      const accountConcurrency = Math.max(
+        1,
+        Math.min(parseInt(body.accountConcurrency, 10) || 5, 8),
+      );
       // 默认 false：互动用全局代理（本机梯子），避免坏 SOCKS 拖死；发帖仍走账号代理
       const useAccountProxy = body.useAccountProxy === true;
       const startedAt = Date.now();
@@ -932,7 +958,9 @@ const server = http.createServer(async (req, res) => {
           Boolean(globalProxyUrl) &&
           globalProxyUrl !== activeProxyUrl;
 
-        const posts = getCachedPosts(accountId, { limit: limitPerAccount });
+        const posts = getCachedPosts(accountId, { limit: limitPerAccount }).filter((post) =>
+          /^\d+$/.test(String(post?.id || "")),
+        );
         if (!posts.length) {
           return {
             accountId,
@@ -956,7 +984,8 @@ const server = http.createServer(async (req, res) => {
         let failedPosts = 0;
         let consecutiveFails = 0;
         let lastError = "";
-        const updated = [];
+        const updated = new Array(posts.length);
+        let abortRemaining = false;
 
         async function fetchStatsOnce(ref, proxyUrl) {
           return fetchPostStatsByRef(ref, {
@@ -966,14 +995,16 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
-        for (let i = 0; i < posts.length; i += 1) {
-          if (remainingMs() < Math.min(postTimeoutMs, 2000)) {
-            lastError = "整轮超时，已提前结束";
-            break;
+        async function refreshOnePost(post, index) {
+          if (abortRemaining || remainingMs() < Math.min(postTimeoutMs, 1500)) {
+            updated[index] = post;
+            return;
           }
-          const post = posts[i];
           const ref = post.id || post.shareLink;
-          if (!ref) continue;
+          if (!ref) {
+            updated[index] = post;
+            return;
+          }
           try {
             let stats;
             try {
@@ -990,34 +1021,47 @@ const server = http.createServer(async (req, res) => {
                 throw err;
               }
             }
-            updated.push({
+            updated[index] = {
               ...post,
               viewCount: stats.viewCount ?? post.viewCount,
               likeCount: stats.likeCount ?? post.likeCount,
               commentCount: stats.commentCount ?? post.commentCount,
               shareCount: stats.shareCount ?? post.shareCount,
-            });
+            };
             refreshedPosts += 1;
             consecutiveFails = 0;
           } catch (err) {
             failedPosts += 1;
             consecutiveFails += 1;
             lastError = err?.message || "刷新失败";
-            updated.push(post);
+            updated[index] = post;
             if (
-              consecutiveFails >= 2 &&
+              consecutiveFails >= 4 &&
               /超时|代理|连接|ECONN|ETIMEDOUT|socket|TLS/i.test(lastError)
             ) {
               lastError = `网络/代理不可用（${lastError}），已跳过剩余帖子`;
-              break;
+              abortRemaining = true;
             }
           }
-          if (delayMs > 0 && i < posts.length - 1) {
+          if (delayMs > 0 && postConcurrency <= 1) {
             await new Promise((r) => setTimeout(r, delayMs));
           }
         }
 
-        if (updated.length) mergeCachedPosts(accountId, updated);
+        // 账号内并行拉帖，显著缩短「每账号×条数」的串行耗时
+        let postCursor = 0;
+        await Promise.all(
+          Array.from({ length: Math.min(postConcurrency, posts.length) }, async () => {
+            while (postCursor < posts.length) {
+              if (abortRemaining) break;
+              const index = postCursor++;
+              await refreshOnePost(posts[index], index);
+            }
+          }),
+        );
+
+        const updatedList = updated.filter(Boolean);
+        if (updatedList.length) await mergeCachedPostsSafe(accountId, updatedList);
         return {
           accountId,
           accountName: account.name,
@@ -1037,7 +1081,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const accounts = new Array(accountIds.length);
-      const concurrency = Math.max(1, Math.min(3, accountIds.length));
+      const concurrency = Math.max(1, Math.min(accountConcurrency, accountIds.length));
       let cursor = 0;
 
       const workers = Promise.all(
@@ -1463,6 +1507,14 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\n  币安广场批量发帖工具已启动`);
   console.log(`  打开浏览器访问: http://localhost:${PORT}\n`);
+  try {
+    const scrubbed = scrubAssumedCachedPosts();
+    if (scrubbed > 0) {
+      appendSystemLog(`已清理历史缓存中 ${scrubbed} 条 assumed_ 假 ID`, { type: "info", source: "system" });
+    }
+  } catch (err) {
+    console.warn("scrubAssumedCachedPosts failed:", err?.message || err);
+  }
   appendSystemLog("本地服务已启动", { type: "ok", source: "system" });
   startAiScheduler(uploadsDir);
 });
